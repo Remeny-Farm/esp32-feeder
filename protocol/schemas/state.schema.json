@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.feeder.invalid/protocol/state.schema.json",
+  "title": "Device state (retained)",
+  "description": "Published retained on feeder/<id>/state. The offline form is the MQTT Last Will.",
+  "oneOf": [
+    {
+      "title": "offline (Last Will)",
+      "type": "object",
+      "properties": { "status": { "const": "offline" } },
+      "required": ["status"],
+      "additionalProperties": false
+    },
+    {
+      "title": "online",
+      "type": "object",
+      "properties": {
+        "status": { "const": "online" },
+        "mode": { "enum": ["running", "paused"] },
+        "fw_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "at": { "$ref": "common.schema.json#/$defs/timestamp", "description": "Present whenever the device clock is valid (clock_valid is true)." },
+        "hoppers": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "hopper": { "$ref": "common.schema.json#/$defs/hopper_name" },
+              "level": { "enum": ["ok", "low", "empty", "unknown"] }
+            },
+            "required": ["hopper", "level"],
+            "additionalProperties": false
+          }
+        },
+        "daily_usage_g": {
+          "description": "Grams dispensed today, per hopper. Zero is allowed.",
+          "type": "object",
+          "propertyNames": { "$ref": "common.schema.json#/$defs/hopper_name" },
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "maxProperties": 3
+        },
+        "clock_valid": { "type": "boolean" }
+      },
+      "required": ["status", "mode", "fw_version", "hoppers", "daily_usage_g", "clock_valid"],
+      "additionalProperties": false
+    }
+  ]
+}

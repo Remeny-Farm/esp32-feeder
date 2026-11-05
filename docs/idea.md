@@ -48,7 +48,9 @@ Answered in [architecture.md](architecture.md):
 
 Still open:
 
-- Cue: which sound, how loud, how long before the scatter?
-- Schedule: how many scatters per day, in which time window?
+- Cue: which sound, how loud, how long before the scatter? (proposal in
+  [welfare.md](welfare.md))
+- Schedule: how many scatters per day, in which time window? (proposal in
+  [welfare.md](welfare.md))
 - Live view: does the feeder trigger or bookmark the camera stream?
 - Measurement: how do we tell whether the hens learned the cue?

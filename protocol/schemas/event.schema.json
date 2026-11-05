@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.feeder.invalid/protocol/event.schema.json",
+  "title": "Event (device to backend)",
+  "description": "Published on feeder/<id>/event. `at` is present whenever the device clock is valid; a device without a synced clock omits it (for example a fault before the first SNTP sync).",
+  "type": "object",
+  "properties": {
+    "type": { "enum": ["cue", "scatter", "fault"] },
+    "source": { "enum": ["random", "remote"] },
+    "at": { "$ref": "common.schema.json#/$defs/timestamp", "description": "Present whenever the device clock is valid." },
+    "command_id": {
+      "$ref": "common.schema.json#/$defs/uuid",
+      "description": "The id of the remote command that caused the event. Only when source is remote."
+    },
+    "doses": {
+      "$ref": "#/$defs/event_doses",
+      "description": "The grams actually dispensed, per hopper. A dose is 0 when the hopper dispensed nothing, for example after a stall or an empty hopper."
+    },
+    "fault": {
+      "type": "object",
+      "properties": {
+        "code": { "enum": ["stall", "hopper_empty", "lid_open", "motor_controller", "watchdog"] },
+        "hopper": { "$ref": "common.schema.json#/$defs/hopper_name" }
+      },
+      "required": ["code"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["type", "source"],
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "scatter" } }, "required": ["type"] }, "then": { "required": ["doses"] } },
+    { "if": { "properties": { "type": { "const": "fault" } }, "required": ["type"] }, "then": { "required": ["fault"] } },
+    { "if": { "properties": { "source": { "const": "random" } }, "required": ["source"] }, "then": { "not": { "required": ["command_id"] } } }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "event_dose": {
+      "type": "object",
+      "properties": {
+        "hopper": { "$ref": "common.schema.json#/$defs/hopper_name" },
+        "grams": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["hopper", "grams"],
+      "additionalProperties": false
+    },
+    "event_doses": {
+      "description": "One dose per hopper, 1 to 3 hoppers. Each hopper may appear once (checked by validate.py). Unlike a command dose, grams may be 0.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/event_dose" }
+    }
+  }
+}

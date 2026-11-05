@@ -1,0 +1,17 @@
+# Reference broker in Docker. Run `certs/make-certs.sh` first.
+# Same relative-path layout as the native run: the working directory is /mosquitto.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    working_dir: /mosquitto
+    command: ["mosquitto", "-c", "mosquitto/mosquitto.conf"]
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./mosquitto:/mosquitto/mosquitto:ro
+      - ./certs/out:/mosquitto/certs/out:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.feeder.invalid/protocol/ack.schema.json",
+  "title": "Command acknowledgement (device to backend)",
+  "description": "Published on feeder/<id>/ack. `reason` is required if and only if status is rejected. `at` is present whenever the device clock is valid; a device without a synced clock omits it (for example a `no_clock` ack).",
+  "type": "object",
+  "properties": {
+    "id": { "$ref": "common.schema.json#/$defs/uuid", "description": "The id of the command." },
+    "status": { "enum": ["accepted", "rejected"] },
+    "reason": {
+      "enum": [
+        "expired",
+        "duplicate",
+        "no_clock",
+        "paused",
+        "quiet_hours",
+        "min_interval",
+        "dose_limit",
+        "daily_budget_exceeded",
+        "hopper_empty",
+        "fault",
+        "invalid"
+      ]
+    },
+    "at": { "$ref": "common.schema.json#/$defs/timestamp", "description": "Present whenever the device clock is valid." }
+  },
+  "required": ["id", "status"],
+  "if": { "properties": { "status": { "const": "rejected" } }, "required": ["status"] },
+  "then": { "required": ["reason"] },
+  "else": { "not": { "required": ["reason"] } },
+  "additionalProperties": false
+}

@@ -49,8 +49,16 @@ Open decisions are listed at the end.
   request.
 - Every command carries a unique `id` and an `expires_at`. The device rejects
   expired commands and command ids it has already seen (replay protection).
-- Without a valid clock (SNTP), the device rejects all remote commands
-  (fail closed). The random scheduler keeps running.
+- The device rejects a command whose lifetime (`expires_at - issued_at`) is
+  longer than 300 s, as `expired`. This keeps every valid command inside the
+  replay window.
+- The MQTT client id equals the device id, which equals the certificate CN.
+  The broker forces the client id to the certificate CN, so a device cannot
+  connect under another id (see `server/README.md`).
+- Without a clock synced at least once since boot, the device rejects all
+  remote commands and the random scheduler does not scatter (quiet hours are
+  unknown, fail closed). After the first sync the RTC keeps time, so the random
+  scheduler keeps running when the internet drops.
 - OTA updates accept only signed images, with automatic rollback on a failed boot.
 - Production units enable Secure Boot v2 and flash encryption. These burn
   eFuses and cannot be undone, so development boards keep them off.
@@ -72,13 +80,17 @@ Both modes run the same sequence: **cue → delay → dose → spin → report**
 
 The firmware enforces these limits. The backend can lower them, never raise
 them above the compiled-in maximums. Values are to be set after a welfare
-review.
+review. Proposed values: [welfare.md](welfare.md).
 
+- Compiled-in maximums are per-site values. Derive them from the site's flock
+  size at build time (see [welfare.md](welfare.md)).
 - Maximum dose per scatter, per hopper.
 - Daily budget in grams, per hopper and in total.
 - Minimum interval between two scatters.
 - Quiet hours: no cue and no scatter at night.
 - Stall or empty hopper: the motor stops and the device sends a fault event.
+- Gate state (daily counters, last scatter, replay ids, pause, faults) is saved
+  in NVS, so a reboot does not reset budgets.
 - The flock's normal feed and water never depend on the feeder.
 
 ## MQTT protocol
@@ -105,12 +117,17 @@ Example command:
 Example rejection:
 
 ```json
-{ "id": "5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69", "status": "rejected", "reason": "daily_budget_exceeded" }
+{
+  "id": "5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69",
+  "status": "rejected",
+  "reason": "daily_budget_exceeded",
+  "at": "2026-11-05T10:00:01Z"
+}
 ```
 
 Rejection reasons: `expired`, `duplicate`, `no_clock`, `paused`, `quiet_hours`,
-`min_interval`, `dose_limit`, `daily_budget_exceeded`, `hopper_empty`, `fault`.
-The JSON Schemas will live in `protocol/`.
+`min_interval`, `dose_limit`, `daily_budget_exceeded`, `hopper_empty`, `fault`,
+`invalid`. The JSON Schemas are in `protocol/`.
 
 ## Hardware
 
@@ -264,3 +281,5 @@ repositories and use the `protocol/` schemas.
 3. **Spinner and chute details:** spinner diameter, height, scatter radius.
 4. **Hopper level sensor type:** reflective IR, break beam or time-of-flight.
 5. **Wi-Fi provisioning:** BLE provisioning or compiled-in credentials.
+6. **Welfare rejection reasons:** per-day scatter count and cue-only limits need
+   new rejection reasons in `protocol/` after welfare approval.

@@ -1,0 +1,24 @@
+# Topic ACL for the feeder fleet. Anything not listed here is denied.
+# Mosquitto's username is the client certificate CN (use_identity_as_username).
+#
+# Device ids match ^[a-z0-9][a-z0-9-]{2,31}$ and equal the certificate CN.
+# `%u` below is replaced by that username.
+#
+# `pattern` rules apply to EVERY user, including `backend`. For `backend`
+# they only expand to feeder/backend/..., which is no real device. That is
+# why the id `backend` is reserved: a device cert with CN `backend` would get
+# the backend rules below (command any device, read all devices).
+# server/certs/make-certs.sh refuses to issue it. See server/README.md.
+
+# --- Devices: own topics only --------------------------------------------
+pattern read feeder/%u/cmd
+pattern write feeder/%u/ack
+pattern write feeder/%u/event
+pattern write feeder/%u/state
+
+# --- Backend service: client cert CN = backend ----------------------------
+user backend
+topic write feeder/+/cmd
+topic read feeder/+/ack
+topic read feeder/+/event
+topic read feeder/+/state
