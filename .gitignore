@@ -1,0 +1,11 @@
+.DS_Store
+# ESP-IDF
+build/
+sdkconfig.old
+managed_components/
+# secrets and device certificates
+*.key
+*.pem
+*.crt
+*.p12
+.env
