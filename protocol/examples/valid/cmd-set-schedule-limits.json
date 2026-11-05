@@ -1,0 +1,13 @@
+{
+  "id": "5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69", "issued_at": "2026-11-05T10:00:00Z", "expires_at": "2026-11-05T10:00:30Z",
+  "type": "set_schedule",
+  "window": { "start": "07:30", "end": "19:00" },
+  "scatters_per_day": 4,
+  "limits": {
+    "max_dose_g": { "grain": 10, "mealworm": 5 },
+    "daily_budget_g": { "grain": 40, "pellet": 30, "mealworm": 15 },
+    "daily_total_g": 70,
+    "min_interval_s": 1800,
+    "quiet_hours": { "start": "21:00", "end": "06:30" }
+  }
+}

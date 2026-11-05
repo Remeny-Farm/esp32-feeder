@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.feeder.invalid/protocol/common.schema.json",
+  "title": "Shared definitions",
+  "description": "Building blocks used by the cmd, ack, event and state schemas.",
+  "$defs": {
+    "device_id": {
+      "description": "Device id. It equals the device certificate CN, the MQTT client id and the <id> in the topic. The id `backend` is reserved for the backend service.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,31}$",
+      "not": { "const": "backend" }
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 date-time in UTC (trailing Z).",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "local_time": {
+      "description": "Local wall-clock time, HH:MM, 24 hours.",
+      "type": "string",
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
+    "time_window": {
+      "description": "Local-time window. start > end means the window crosses midnight.",
+      "type": "object",
+      "properties": {
+        "start": { "$ref": "#/$defs/local_time" },
+        "end": { "$ref": "#/$defs/local_time" }
+      },
+      "required": ["start", "end"],
+      "additionalProperties": false
+    },
+    "hopper_name": {
+      "description": "Hopper name. Default names are grain, pellet and mealworm.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,15}$"
+    },
+    "grams": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dose": {
+      "type": "object",
+      "properties": {
+        "hopper": { "$ref": "#/$defs/hopper_name" },
+        "grams": { "$ref": "#/$defs/grams" }
+      },
+      "required": ["hopper", "grams"],
+      "additionalProperties": false
+    },
+    "doses": {
+      "description": "One dose per hopper, 1 to 3 hoppers. Each hopper may appear once (checked by validate.py; JSON Schema cannot express uniqueness by one property).",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/dose" }
+    },
+    "hopper_gram_map": {
+      "description": "Map hopper name to grams. At most 3 hoppers in v1.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/hopper_name" },
+      "additionalProperties": { "$ref": "#/$defs/grams" },
+      "maxProperties": 3
+    }
+  }
+}

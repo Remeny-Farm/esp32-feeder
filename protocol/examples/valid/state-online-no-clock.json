@@ -1,0 +1,8 @@
+{
+  "status": "online",
+  "mode": "running",
+  "fw_version": "0.1.0",
+  "hoppers": [{ "hopper": "grain", "level": "unknown" }],
+  "daily_usage_g": { "grain": 0 },
+  "clock_valid": false
+}

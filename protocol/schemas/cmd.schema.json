@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.feeder.invalid/protocol/cmd.schema.json",
+  "title": "Command (backend to device)",
+  "description": "Published on feeder/<id>/cmd. Discriminated by `type`.",
+  "oneOf": [
+    {
+      "title": "scatter",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "type": { "const": "scatter" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "doses": { "$ref": "common.schema.json#/$defs/doses" },
+        "cue": { "type": "boolean", "default": true }
+      },
+      "required": ["id", "type", "issued_at", "expires_at", "doses"],
+      "additionalProperties": false
+    },
+    {
+      "title": "cue",
+      "description": "Sound cue only, no feed.",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "type": { "const": "cue" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "required": ["id", "type", "issued_at", "expires_at"],
+      "additionalProperties": false
+    },
+    {
+      "title": "pause",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "type": { "const": "pause" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "required": ["id", "type", "issued_at", "expires_at"],
+      "additionalProperties": false
+    },
+    {
+      "title": "resume",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "type": { "const": "resume" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "required": ["id", "type", "issued_at", "expires_at"],
+      "additionalProperties": false
+    },
+    {
+      "title": "set_schedule",
+      "description": "Sets the random-scatter window and count. `limits` can only make the feeder stricter: max dose, budgets and quiet hours follow the rules in protocol/README.md, and min_interval_s can only lengthen the interval. Values above the compiled-in maximums are clamped. Omitting `limits` resets the runtime limits to the compiled values.",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "type": { "const": "set_schedule" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "window": { "$ref": "common.schema.json#/$defs/time_window" },
+        "scatters_per_day": { "type": "integer", "minimum": 0, "maximum": 24 },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "max_dose_g": { "$ref": "common.schema.json#/$defs/hopper_gram_map" },
+            "daily_budget_g": { "$ref": "common.schema.json#/$defs/hopper_gram_map" },
+            "daily_total_g": { "$ref": "common.schema.json#/$defs/grams" },
+            "min_interval_s": { "type": "integer", "minimum": 1 },
+            "quiet_hours": { "$ref": "common.schema.json#/$defs/time_window" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["id", "type", "issued_at", "expires_at", "window", "scatters_per_day"],
+      "additionalProperties": false
+    }
+  ]
+}

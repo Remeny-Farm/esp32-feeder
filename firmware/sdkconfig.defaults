@@ -1,0 +1,66 @@
+# Feeder firmware defaults for ESP-IDF v5.3+. Applied on a fresh `idf.py set-target esp32c3`;
+# `idf.py menuconfig` and the local (gitignored) sdkconfig override them.
+#
+# Names I am not 100% sure of for v5.3 (an unknown name is silently ignored, so check them with
+# `idf.py menuconfig` after the first configure):
+#   CONFIG_MBEDTLS_SSL_PROTO_TLS1_3         (TLS 1.3 client support, present since v5.1)
+#   CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN, CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN,
+#   CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN      (asymmetric TLS record buffers)
+#   CONFIG_ESP_WIFI_SOFTAP_SUPPORT          (v5.0+, drops the unused AP code)
+# All other names below are long-standing.
+
+# ---- target and flash ----
+CONFIG_IDF_TARGET="esp32c3"
+# Two OTA slots plus a factory app (partitions_two_ota). The app must fit in 1 MB per slot
+# with Wi-Fi + TLS + MQTT; if it does not, switch to a custom table without the factory app.
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Smaller image: leaves room in the 1 MB slot.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# The SuperMini console is the on-chip USB (GPIO18/19). GPIO20 (UART0 RX) is the buzzer pin.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# ---- OTA rollback ----
+# A new image must confirm itself (esp_ota_mark_app_valid_cancel_rollback) after MQTT connected,
+# otherwise the bootloader returns to the previous image.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ---- NO Secure Boot, NO flash encryption ----
+# These are development boards: both burn eFuses and cannot be undone. Production units enable
+# both (docs/architecture.md). The device key in certs/ is therefore readable from flash on
+# development boards.
+# CONFIG_SECURE_BOOT is not set
+# CONFIG_SECURE_FLASH_ENC_ENABLED is not set
+
+# ---- FreeRTOS and tasks ----
+# 1 ms tick: vTaskDelay(pdMS_TO_TICKS()) is exact for the cue notes.
+CONFIG_FREERTOS_HZ=1000
+# TLS handshake runs on the mqtt task, but SNTP/MQTT start from app_main: keep headroom.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# ---- Wi-Fi ----
+# Station only. No access point code.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# ---- mbedTLS (mTLS to the broker, own CA only) ----
+# We embed our CA, so the Mozilla certificate bundle is not needed.
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE is not set
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+# Hardware acceleration (the defaults, kept explicit).
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_HARDWARE_MPI=y
+# Incoming TLS records can be up to 16 KB (the server decides), so keep 16384 for input.
+# Our outgoing messages are small (< 1 KB), so a 4 KB output buffer saves about 12 KB of heap.
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# ---- SNTP ----
+# Two servers at most are needed; the app configures one (CONFIG_FEEDER_NTP_SERVER).
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+
+# ---- esp-mqtt ----
+# Defaults are used: MQTT 3.1.1, TLS transport on, 1 KB buffers (larger payloads arrive in
+# fragments, which the app reassembles up to 2048 bytes), auto-reconnect on.
