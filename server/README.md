@@ -8,7 +8,7 @@ reference setup, not a production deployment.
 
 | File | Purpose |
 |---|---|
-| `mosquitto/mosquitto.conf` | One listener, port 8883, TLS only. No plaintext listener, no anonymous access. Client certificate required. The certificate CN is the MQTT username. |
+| `mosquitto/mosquitto.conf` | One listener, port 8883, TLS only. No plaintext listener, no anonymous access. Client certificate required. The certificate CN is the MQTT username and the client id. |
 | `mosquitto/acl` | Topic ACL. Anything not listed is denied. |
 | `certs/make-certs.sh` | Creates the CA, the broker certificate, device certificates and the backend certificate. Needs only `openssl`. |
 | `certs/out/` | Output of the script. Git ignores everything in it. |
@@ -21,8 +21,9 @@ reference setup, not a production deployment.
   `feeder/<id>/event` and `feeder/<id>/state` (device to backend). `state` is
   retained, and the device Last Will goes to `state`.
 - Device id: `^[a-z0-9][a-z0-9-]{2,31}$`. The device certificate CN equals the id.
-  The firmware sets the MQTT client id to the device id. The broker cannot
-  enforce this without the dynamic-security plugin (see "Known limits").
+  The firmware sets the MQTT client id to the device id. The broker also
+  forces the client id to the certificate CN (`use_username_as_clientid`), so
+  a device cannot use another client id.
 - The backend service has its own certificate with CN `backend`.
 
 The ACL gives a device only its own topics: read `feeder/<id>/cmd`, write
@@ -163,15 +164,28 @@ end. The first check is the most reliable one.
    publishes its own `ack`, `event` and `state`; the backend publishes `cmd`
    and reads `feeder/+/ack`, `feeder/+/event` and `feeder/+/state`.
 
-Re-run these tests after every change to `mosquitto/acl`.
+7. **Client id is forced to the CN.** Terminal 1 runs the real device:
+   `mosquitto_sub -h localhost -p 8883 $D2 -i coop-02 -t feeder/coop-02/cmd -v`
+   (as in "Try it"; the broker logs the connection as `coop-02`). Terminal 2
+   connects with the `coop-01` certificate and the client id `coop-02`:
+
+   ```sh
+   mosquitto_sub -h localhost -p 8883 $D1 -i coop-02 -V mqttv5 -d -t feeder/coop-01/cmd
+   ```
+
+   Expected: the broker log shows the new client as `coop-01`, not `coop-02`
+   (the broker replaced the client id with the CN). Terminal 1 stays connected.
+   Repeat with `-i backend`: the backend connection must also stay up.
+
+Re-run these tests after every change to `mosquitto/acl` or `mosquitto.conf`.
 
 ## Known limits of this setup
 
-- **Client id is not bound to the certificate.** Stock Mosquitto cannot force
-  client id = CN. A device with a valid certificate could connect with another
-  device's client id and disconnect it. Firmware must use the device id as the
-  client id. Binding it at the broker needs the dynamic-security plugin or an
-  auth plugin.
+- **Client id is bound to the certificate.** The broker forces client id = CN
+  (`use_username_as_clientid true` together with `use_identity_as_username`).
+  A device cannot connect as another device or as `backend`, so it cannot
+  disconnect that client or trigger its Last Will. The `-i` option of a client
+  has no effect. Check this with test 7 above after every config change.
 - **No revocation.** There is no CRL, and the `pattern` rules cannot deny one
   device. To cut off a lost device, add a `crlfile` (Mosquitto option) with
   that certificate revoked, or rotate the CA.

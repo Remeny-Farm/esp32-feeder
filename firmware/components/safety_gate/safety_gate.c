@@ -289,6 +289,8 @@ bool gate_restore(gate_t *g, const gate_state_t *saved)
         st.seen_ids[i][GATE_ID_BUF - 1] = '\0';
     }
     g->st = st;
+    g->reserved = false; /* a reservation does not survive a restore: its grams stay counted */
+    memset(g->reserved_g, 0, sizeof g->reserved_g);
     g->dirty = false;
     return true;
 }
@@ -306,17 +308,16 @@ bool gate_take_dirty(gate_t *g)
 /* clock-dependent state                                               */
 /* ------------------------------------------------------------------ */
 
-/* Daily counters reset at local midnight. Needs a valid clock. */
+/* Daily counters reset at local midnight. Needs a valid clock.
+ * st.day is MONOTONIC: it is the highest local day seen. If the local day goes
+ * backwards (clock corrected, time zone change) the counters are kept and
+ * st.day stays. Only a day above st.day resets, so stepping the clock back and
+ * forward again cannot hand out the day's budget twice (fail closed). */
 static void roll_day(gate_t *g, const gate_time_t *tm)
 {
     if (tm->local_day > g->st.day) {
         memset(g->st.used_g, 0, sizeof g->st.used_g);
         g->st.used_total_g = 0;
-        g->st.day = tm->local_day;
-        g->dirty = true;
-    } else if (tm->local_day < g->st.day) {
-        /* The local day went backwards (clock corrected, time zone change).
-         * Keep the counters (fail closed) and follow the new day number. */
         g->st.day = tm->local_day;
         g->dirty = true;
     }
@@ -511,6 +512,54 @@ void gate_commit_scatter(gate_t *g, const gate_time_t *tm, const uint32_t grams[
     if (clock_ok(tm)) {
         g->st.last_scatter_at = tm->now;
     }
+    g->dirty = true;
+}
+
+/* Grams to take back when `actual` came out of `reserved`: never negative,
+ * never more than was reserved. */
+static uint32_t refund_of(uint32_t reserved, uint32_t actual)
+{
+    return actual < reserved ? reserved - actual : 0;
+}
+
+bool gate_reserve_scatter(gate_t *g, const gate_time_t *tm, const gate_dose_t *doses, size_t n)
+{
+    if (!g->ready || !clock_ok(tm) || check_doses_valid(g, doses, n) != GATE_OK) {
+        return false;
+    }
+    roll_day(g, tm);
+    for (size_t i = 0; i < n; i++) {
+        uint8_t h = doses[i].hopper;
+        uint32_t grams = (doses[i].grams > (int64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)doses[i].grams;
+        g->st.used_g[h] = sat_add(g->st.used_g[h], grams);
+        g->st.used_total_g = sat_add(g->st.used_total_g, grams);
+        g->reserved_g[h] = sat_add(g->reserved_g[h], grams);
+    }
+    g->reserved_day = g->st.day;
+    g->reserved = true;
+    g->st.last_scatter_at = tm->now;
+    g->dirty = true;
+    return true;
+}
+
+void gate_settle_scatter(gate_t *g, const gate_time_t *tm, const uint32_t actual[GATE_MAX_HOPPERS])
+{
+    (void)tm;
+    if (!g->ready || actual == NULL || !g->reserved) {
+        return; /* nothing reserved: nothing to give back (fail closed) */
+    }
+    /* If the local day rolled while the motors ran, the reserved grams belong to
+     * the old day: the counters were already reset, so there is nothing to refund. */
+    if (g->reserved_day == g->st.day) {
+        for (uint8_t h = 0; h < g->limits.hopper_count; h++) {
+            uint32_t refund = refund_of(g->reserved_g[h], actual[h]);
+            refund = min_u32(refund, g->st.used_g[h]);
+            g->st.used_g[h] -= refund;
+            g->st.used_total_g -= min_u32(refund, g->st.used_total_g);
+        }
+    }
+    memset(g->reserved_g, 0, sizeof g->reserved_g);
+    g->reserved = false;
     g->dirty = true;
 }
 

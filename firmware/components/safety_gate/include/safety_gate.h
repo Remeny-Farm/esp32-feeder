@@ -60,9 +60,11 @@
  *       compiled quiet hours" (not recommended).
  *
  * Time: the gate never reads a clock. If the local day number goes backwards
- * the counters are kept (fail closed). A last-scatter time in the future is
- * clamped to now. A forward jump resets the counters, so time is a trust
- * root: the SNTP source must be trusted.
+ * the counters are kept and st.day stays at the highest day seen, so stepping
+ * the clock back and forward again never resets the counters twice (fail
+ * closed). A last-scatter time in the future is clamped to now. A jump to a
+ * day above st.day resets the counters, so time is a trust root: the SNTP
+ * source must be trusted.
  * ---------------------------------------------------------------------
  */
 #ifndef SAFETY_GATE_H
@@ -186,8 +188,11 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    int64_t day;                                 /* local day of the counters */
-    uint32_t used_g[GATE_MAX_HOPPERS];           /* actual grams, today */
+    int64_t day;                                 /* highest local day seen (monotonic) */
+    /* Grams today. A scatter is counted at its REQUESTED size from
+     * gate_reserve_scatter() on, and lowered to the actual grams by
+     * gate_settle_scatter(). A reset in between keeps the requested grams. */
+    uint32_t used_g[GATE_MAX_HOPPERS];
     uint32_t used_total_g;
     int64_t last_scatter_at;                     /* 0 = never */
     int64_t last_cue_at;                         /* cue-only commands, 0 = never */
@@ -205,6 +210,11 @@ typedef struct {
     gate_level_t level[GATE_MAX_HOPPERS];        /* not persisted */
     bool dirty;
     bool ready;                                  /* gate_init() succeeded */
+    /* In-flight reservation (gate_reserve_scatter), NOT persisted: after a
+     * reset the reserved grams simply stay counted in st.used_g. */
+    bool reserved;
+    int64_t reserved_day;
+    uint32_t reserved_g[GATE_MAX_HOPPERS];
 } gate_t;
 
 /* Validate and install the compiled-in limits; state starts empty (running,
@@ -242,9 +252,30 @@ gate_result_t gate_check_scatter(gate_t *g, const gate_time_t *tm, gate_source_t
 gate_result_t gate_check_cue(gate_t *g, const gate_time_t *tm, gate_source_t src,
                              const gate_cmd_meta_t *meta);
 
-/* Record what a scatter actually dispensed. grams[i] is the actual amount of
- * hopper i (<= requested; less on a stall, 0 if nothing came out). Counts as a
- * scatter for min_interval even when everything is 0 (the motors ran). */
+/* Fail-closed scatter accounting, in two steps:
+ *   1. After gate_check_scatter() returned GATE_OK and BEFORE any motor runs,
+ *      call gate_reserve_scatter(). It adds the REQUESTED grams to used-today
+ *      (per hopper and total) and sets last_scatter_at = now. Save the gate
+ *      state (gate_take_dirty) before the motors start. A brownout, panic or
+ *      watchdog reset during dispensing then still counts the requested grams
+ *      and applies min_interval.
+ *   2. After the motors stopped, call gate_settle_scatter() with the ACTUAL
+ *      grams. It only lowers the counters toward the actual amount: never
+ *      below 0, never above what was reserved (an actual above the request
+ *      changes nothing). last_scatter_at stays: the motors ran, even with 0 g.
+ * Returns false (nothing changed, do NOT run the motors) when the gate is not
+ * ready, the clock is invalid or the dose list is malformed. Reservations add
+ * up if a second one comes before the settle. */
+bool gate_reserve_scatter(gate_t *g, const gate_time_t *tm, const gate_dose_t *doses, size_t n_doses);
+/* grams[i] is the actual amount of hopper i (0 if nothing came out). A settle
+ * without a pending reservation does nothing. If the local day rolled since the
+ * reservation, the old day's grams are not refunded from the new day. */
+void gate_settle_scatter(gate_t *g, const gate_time_t *tm, const uint32_t grams[GATE_MAX_HOPPERS]);
+
+/* Simple path without a reservation: record what a scatter dispensed. grams[i]
+ * is the actual amount of hopper i. Counts as a scatter for min_interval even
+ * when everything is 0. NOT crash safe (see above): the app uses
+ * reserve + settle. Do not call it between a reserve and its settle. */
 void gate_commit_scatter(gate_t *g, const gate_time_t *tm, const uint32_t grams[GATE_MAX_HOPPERS]);
 /* Record a cue-only command that actually played. */
 void gate_commit_cue(gate_t *g, const gate_time_t *tm);

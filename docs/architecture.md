@@ -53,7 +53,8 @@ Open decisions are listed at the end.
   longer than 300 s, as `expired`. This keeps every valid command inside the
   replay window.
 - The MQTT client id equals the device id, which equals the certificate CN.
-  The broker cannot enforce this (see `server/README.md`).
+  The broker forces the client id to the certificate CN, so a device cannot
+  connect under another id (see `server/README.md`).
 - Without a clock synced at least once since boot, the device rejects all
   remote commands and the random scheduler does not scatter (quiet hours are
   unknown, fail closed). After the first sync the RTC keeps time, so the random
@@ -81,6 +82,8 @@ The firmware enforces these limits. The backend can lower them, never raise
 them above the compiled-in maximums. Values are to be set after a welfare
 review. Proposed values: [welfare.md](welfare.md).
 
+- Compiled-in maximums are per-site values. Derive them from the site's flock
+  size at build time (see [welfare.md](welfare.md)).
 - Maximum dose per scatter, per hopper.
 - Daily budget in grams, per hopper and in total.
 - Minimum interval between two scatters.

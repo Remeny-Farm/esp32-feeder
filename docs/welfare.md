@@ -333,9 +333,15 @@ Nothing worse happens. Fault events tell the keeper.
 6. **Second limit on the motor controller.** The Einsy has its own step and run
    time limits and a hardware kill (see the prototype section in
    [architecture.md](architecture.md)).
-7. **Worst case, one day.** The budget caps the day at 5 g per hen
-   (150 g for 30 hens). That is at most 10% of the reference feed intake, the
-   same as the 10% guidance in section 1.
+7. **Worst case, one day.** The compiled-in maximums are per-site values.
+   Set them at build time from that site's flock size `N`: `daily_total_g =
+   B x N = 5 g x N`, and every other maximum in section 5 is its per-hen value
+   times `N`. Then the gate caps the day at 5 g per hen, which is 5% of the
+   reference feed intake `F`. The feeder budget `B` is 5% of `F`. The
+   other 5% of the 10% treat limit is left for the keeper (section 1).
+   The caps are only right for the flock size they were built for. A build for
+   30 hens (150 g per day) on a 10-hen flock allows 15 g per hen per day, which
+   is 15% of intake. Never ship a flock-30 build to a smaller flock.
    If a fault bypasses the gate, a stuck auger can empty a hopper. The hopper
    capacity then sets the worst case, so keep hoppers small. This is an open
    hardware point.
@@ -343,9 +349,37 @@ Nothing worse happens. Fault events tell the keeper.
 ## 5. Firmware values (proposal)
 
 All values are proposals. "Flock 20" is the reference flock. "Flock 30" is the
-largest supported flock and the compiled-in maximum. The operator sets the real
-flock size at install time. The backend can lower values, never raise them
-above the compiled-in maximum.
+largest supported flock. The flock size is a build-time value. It is not a
+protocol field, not a firmware setting and not a remote setting. For each site
+the builder takes the flock size `N` and computes the compiled-in maximums as
+the per-hen value times `N`. The "Flock 30" column is the result for `N = 30`,
+and it is wrong for a smaller flock. The backend can lower values at runtime,
+never raise them above the compiled-in maximum.
+
+```
+daily_total_g     = B x N          = 5 x N        (g per day)
+daily_budget_g    = per-hen share x N              (per hopper, see the table)
+max_dose_g        = per-hen dose x N               (per hopper, per scatter)
+```
+
+**Current firmware defaults.** `firmware/main/Kconfig.projbuild` now matches the
+10-hen column: max dose 10/10/5 g, daily budgets 40/40/10 g, and daily total 50 g
+(`5 x N` with `N = 10`). The defaults are the proposal for a 10-hen flock and must
+be derived per site from the flock size.
+
+**Worst case with the defaults on a smaller flock.** The daily total of 50 g
+is shared by `N` hens, so each hen can get up to `50 / N` g per day.
+
+| Flock | Worst case per hen per day | Share of `F` (100 g) |
+|---|---|---|
+| 10 | 5 g | 5% (intended) |
+| 8 | 6.3 g | 6% |
+| 5 | 10 g | 10% (the whole treat limit) |
+| 3 | 16.7 g | 17% |
+
+A flock below 10 hens is outside the supported scope (section 1). Still, a
+build must never use the defaults for such a flock. Set
+`FEEDER_DAILY_TOTAL_G` to `5 x N` first.
 
 | Name | Unit | Per hen | Flock 20 | Flock 30 (compiled-in max) | Basis |
 |---|---|---|---|---|---|
@@ -368,7 +402,7 @@ above the compiled-in maximum.
 | `cue_level_db` | dB(A) at 1 m | n/a | 65 | 70 (hard max) | [S15, S16] |
 | `cue_to_scatter_delay_ms` | ms from cue end to spinner start | n/a | 2000 | 2000 | Design judgement |
 | `cue_only_per_week` | count | n/a | 1 (none in first 14 days) | 1 | Design judgement |
-| `flock_size` | hens | n/a | 20 | 30 | Install setting; remote can only lower it |
+| `flock_size` (`N`, input to the formulas above) | hens | n/a | 20 | 30 | Build-time value for the site. Not a runtime or remote setting |
 
 Rejection reasons already in the protocol cover these limits: `quiet_hours`,
 `min_interval`, `dose_limit`, `daily_budget_exceeded`, `no_clock`. A scatter
@@ -389,8 +423,10 @@ separate change.
    used 15 s with no gap. Do we accept this, or test 15 s first?
 6. **Cue level.** 65 dB(A) at 1 m, hard maximum 70. Confirm after a field
    measurement with a sound level meter.
-7. **Flock size.** Is `flock_size` set at install only, or can the operator
-   change it later? A remote raise must stay impossible.
+7. **Flock size.** `N` is fixed at build time. When a keeper changes the
+   flock, the site needs a new build (or a new signed config). A remote raise
+   must stay impossible. Do we accept a rebuild, or do we want a local
+   (not remote) install setting?
 8. **Artificial light.** If the coop is lit, the window follows the light
    schedule and not the sun.
 9. **Remote `cue` command.** It plays a cue without food. Limit it to

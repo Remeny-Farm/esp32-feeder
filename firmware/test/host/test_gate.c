@@ -729,6 +729,152 @@ static void test_clock_back_keeps_counters(void)
     CHECK_EQ(used(&g, NOON(4) + 3600, 0), 10);
 }
 
+static void test_clock_step_back_then_forward_does_not_reset_twice(void)
+{
+    gate_t g;
+    int64_t d100 = NOON(100), d99 = NOON(99), d101 = NOON(101);
+    setup(&g);
+    commit(&g, d100, 10, 10, 5);
+    commit(&g, d100 + INTERVAL, 10, 10, 5);
+    commit(&g, d100 + 2 * INTERVAL, 10, 10, 5); /* hopper 0 and 1 at 30 g: budget used up */
+    REASON(rs(&g, d100 + 3 * INTERVAL, "cb-0", 0, 1), "daily_budget_exceeded");
+
+    /* clock steps back one day: rejected (the clamped last scatter waits an interval,
+     * the counters are kept either way) */
+    CHECK(rs(&g, d99 + 3 * INTERVAL, "cb-1", 0, 1) != GATE_OK);
+    REASON(rs(&g, d99 + 4 * INTERVAL, "cb-1b", 0, 1), "daily_budget_exceeded");
+    CHECK_EQ(used(&g, d99, 0), 30);
+    CHECK_EQ(gate_state(&g)->day, 100); /* st.day stays at the highest day seen */
+
+    /* clock returns to day 100: must NOT reset */
+    REASON(rs(&g, d100 + 6 * INTERVAL, "cb-2", 0, 1), "daily_budget_exceeded");
+    CHECK_EQ(used(&g, d100, 0), 30);
+
+    /* day 101: reset */
+    CHECK_EQ(rs(&g, d101, "cb-3", 0, 10), GATE_OK);
+    CHECK_EQ(used(&g, d101, 0), 0);
+    CHECK_EQ(gate_state(&g)->day, 101);
+}
+
+static void test_reserve_survives_reset_before_settle(void)
+{
+    gate_t g, g2;
+    gate_time_t t = at(NOON(1));
+    gate_dose_t d[2] = {{0, 10}, {1, 7}};
+    gate_state_t blob;
+    setup(&g);
+    CHECK_EQ(gate_check_scatter(&g, &t, GATE_SRC_RANDOM, NULL, d, 2), GATE_OK);
+    CHECK(gate_reserve_scatter(&g, &t, d, 2));
+    CHECK(gate_take_dirty(&g)); /* the app saves before the motors run */
+    CHECK_EQ(used(&g, NOON(1), 0), 10);
+    CHECK_EQ(used(&g, NOON(1), 1), 7);
+    CHECK_EQ(used_total(&g, NOON(1)), 17);
+    CHECK_EQ(gate_state(&g)->last_scatter_at, NOON(1));
+
+    /* reset before the settle: restore from the persisted blob */
+    memcpy(&blob, gate_state(&g), sizeof blob);
+    setup(&g2);
+    CHECK(gate_restore(&g2, &blob));
+    CHECK_EQ(used(&g2, NOON(1), 0), 10);
+    CHECK_EQ(used(&g2, NOON(1), 1), 7);
+    CHECK_EQ(used_total(&g2, NOON(1)), 17);
+    REASON(rnd(&g2, NOON(1) + INTERVAL - 1, 0, 1), "min_interval");
+    CHECK_EQ(rnd(&g2, NOON(1) + INTERVAL, 0, 1), GATE_OK);
+    /* a settle after the restore has no reservation to give back */
+    {
+        uint32_t zero[GATE_MAX_HOPPERS] = {0, 0, 0};
+        gate_settle_scatter(&g2, &t, zero);
+        CHECK_EQ(used(&g2, NOON(1), 0), 10);
+        CHECK_EQ(used_total(&g2, NOON(1)), 17);
+    }
+    /* the budget counts the requested grams: hopper 0 has 20 g left */
+    REASON(rs(&g2, NOON(1) + INTERVAL, "rv-1", 0, MAX0 + 1), "dose_limit");
+    commit(&g2, NOON(1) + INTERVAL, 10, 0, 0);
+    commit(&g2, NOON(1) + 2 * INTERVAL, 10, 0, 0);
+    REASON(rs(&g2, NOON(1) + 3 * INTERVAL, "rv-2", 0, 1), "daily_budget_exceeded");
+}
+
+static void test_reserve_then_settle_lowers_to_actual(void)
+{
+    gate_t g;
+    gate_time_t t = at(NOON(1));
+    gate_dose_t d[2] = {{0, 10}, {1, 8}};
+    uint32_t actual[GATE_MAX_HOPPERS] = {4, 0, 0};
+    setup(&g);
+    CHECK(gate_reserve_scatter(&g, &t, d, 2));
+    (void)gate_take_dirty(&g);
+    gate_settle_scatter(&g, &t, actual); /* hopper 0: 4 of 10 g; hopper 1: stalled at once */
+    CHECK(gate_take_dirty(&g));
+    CHECK_EQ(used(&g, NOON(1), 0), 4);
+    CHECK_EQ(used(&g, NOON(1), 1), 0);
+    CHECK_EQ(used_total(&g, NOON(1)), 4);
+    CHECK_EQ(gate_state(&g)->last_scatter_at, NOON(1)); /* the motors ran: interval applies */
+    REASON(rnd(&g, NOON(1) + 1, 0, 1), "min_interval");
+}
+
+static void test_settle_cannot_underflow_or_raise(void)
+{
+    gate_t g;
+    gate_time_t t = at(NOON(1));
+    gate_dose_t d = {0, 10};
+    uint32_t big[GATE_MAX_HOPPERS] = {50, 50, 50};
+    uint32_t zero[GATE_MAX_HOPPERS] = {0, 0, 0};
+    setup(&g);
+
+    /* actual above the request does not raise the counters */
+    CHECK(gate_reserve_scatter(&g, &t, &d, 1));
+    gate_settle_scatter(&g, &t, big);
+    CHECK_EQ(used(&g, NOON(1), 0), 10);
+    CHECK_EQ(used_total(&g, NOON(1)), 10);
+
+    /* a second settle without a reservation changes nothing */
+    gate_settle_scatter(&g, &t, zero);
+    CHECK_EQ(used(&g, NOON(1), 0), 10);
+
+    /* earlier usage stays: the refund is only the unused part of the reservation */
+    CHECK(gate_reserve_scatter(&g, &t, &d, 1)); /* 20 g */
+    gate_settle_scatter(&g, &t, zero);
+    CHECK_EQ(used(&g, NOON(1), 0), 10);
+    CHECK_EQ(used_total(&g, NOON(1)), 10);
+
+    /* counters cannot go below 0, even if the state was lowered meanwhile */
+    CHECK(gate_reserve_scatter(&g, &t, &d, 1));
+    gate_state_t blob;
+    memcpy(&blob, gate_state(&g), sizeof blob);
+    blob.used_g[0] = 3;
+    blob.used_total_g = 2;
+    CHECK(gate_restore(&g, &blob));
+    gate_settle_scatter(&g, &t, zero); /* no reservation after a restore */
+    CHECK_EQ(used(&g, NOON(1), 0), 3);
+    g.reserved = true; /* force a pending reservation over smaller counters */
+    g.reserved_day = g.st.day;
+    g.reserved_g[0] = 10;
+    gate_settle_scatter(&g, &t, zero);
+    CHECK_EQ(used(&g, NOON(1), 0), 0);
+    CHECK_EQ(used_total(&g, NOON(1)), 0);
+
+    /* an invalid reservation changes nothing */
+    gate_time_t bad = t;
+    bad.clock_valid = false;
+    CHECK(!gate_reserve_scatter(&g, &bad, &d, 1));
+    CHECK(!gate_reserve_scatter(&g, &t, NULL, 0));
+    CHECK_EQ(used(&g, NOON(1), 0), 0);
+}
+
+static void test_settle_after_midnight_does_not_refund_new_day(void)
+{
+    gate_t g;
+    gate_time_t t = at(DAY(1) + 86400 - 5);
+    gate_dose_t d = {0, 10};
+    uint32_t zero[GATE_MAX_HOPPERS] = {0, 0, 0};
+    setup(&g);
+    CHECK(gate_reserve_scatter(&g, &t, &d, 1));
+    t = at(DAY(2) + 5);
+    commit(&g, DAY(2) + 5, 6, 0, 0); /* day 2 usage */
+    gate_settle_scatter(&g, &t, zero);
+    CHECK_EQ(used(&g, DAY(2) + 5, 0), 6); /* the old day's reservation is not taken from day 2 */
+}
+
 static void test_hopper_empty(void)
 {
     gate_t g;
@@ -1078,6 +1224,11 @@ int main(void)
     RUN_TEST(test_daily_reset_at_local_midnight);
     RUN_TEST(test_daily_reset_uses_local_day_not_utc);
     RUN_TEST(test_clock_back_keeps_counters);
+    RUN_TEST(test_clock_step_back_then_forward_does_not_reset_twice);
+    RUN_TEST(test_reserve_survives_reset_before_settle);
+    RUN_TEST(test_reserve_then_settle_lowers_to_actual);
+    RUN_TEST(test_settle_cannot_underflow_or_raise);
+    RUN_TEST(test_settle_after_midnight_does_not_refund_new_day);
     RUN_TEST(test_hopper_empty);
     RUN_TEST(test_invalid);
     RUN_TEST(test_runtime_invalid_leaves_gate_unchanged);

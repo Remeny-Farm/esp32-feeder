@@ -6,7 +6,8 @@ feeder. The design and the reasons are in [../docs/architecture.md](../docs/arch
 ## Topics
 
 `<id>` is the device id. It matches `^[a-z0-9][a-z0-9-]{2,31}$` and equals the
-CN of the device certificate and the MQTT client id. The id `backend` is
+CN of the device certificate and the MQTT client id. The broker forces the
+client id to the certificate CN. The id `backend` is
 reserved for the backend service and is not a valid device id.
 
 | Topic | Direction | Schema | Notes |
@@ -28,7 +29,9 @@ Shared definitions (timestamps, hopper names, doses) are in
   `state` with `clock_valid: false`. The backend must not rely on `at`.
 - Command ids are UUIDs. Every command has `id`, `type`, `issued_at`, `expires_at`.
 - Hopper names match `^[a-z][a-z0-9_]{0,15}$`. A device has at most 3 hoppers.
-- Grams are integers of 1 or more.
+- Grams in a command are integers of 1 or more. An event reports the grams
+  actually dispensed, so it may report 0 (for example after a stall or an empty
+  hopper). An event never reports a negative value.
 - No message accepts unknown fields (`additionalProperties: false`).
 - `set_schedule.limits` can only make the feeder stricter. The firmware still
   checks them against its compiled-in maximums. See "Runtime limits".
@@ -60,7 +63,8 @@ compiled-in limits so the result is never looser:
 ## Delivery rules
 
 - The backend publishes `cmd` with QoS 1 and never retained.
-- The MQTT client id equals the device id.
+- The MQTT client id equals the device id. The broker forces it to the
+  certificate CN, so a device cannot use another id.
 - A command without a readable `id`, or that is not valid JSON, gets no ack. The
   device logs it and drops it. A command with an `id` but otherwise invalid gets
   an `invalid` ack.

@@ -75,6 +75,7 @@ menu "Feeder"
             default 10
             help
                 PLACEHOLDER: set after welfare review. No command can exceed it.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_MAX_DOSE_G_1
             int "Max dose per scatter, hopper 1 (g)"
@@ -82,34 +83,39 @@ menu "Feeder"
             default 10
             help
                 PLACEHOLDER: set after welfare review. No command can exceed it.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_MAX_DOSE_G_2
             int "Max dose per scatter, hopper 2 (g)"
             range 1 1000
-            default 10
+            default 5
             help
                 PLACEHOLDER: set after welfare review. No command can exceed it.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_DAILY_BUDGET_G_0
             int "Daily budget, hopper 0 (g)"
             range 1 10000
-            default 30
+            default 40
             help
                 PLACEHOLDER: set after welfare review. Counts actual grams per local day.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_DAILY_BUDGET_G_1
             int "Daily budget, hopper 1 (g)"
             range 1 10000
-            default 30
+            default 40
             help
                 PLACEHOLDER: set after welfare review. Counts actual grams per local day.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_DAILY_BUDGET_G_2
             int "Daily budget, hopper 2 (g)"
             range 1 10000
-            default 30
+            default 10
             help
                 PLACEHOLDER: set after welfare review. Counts actual grams per local day.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_DAILY_TOTAL_G
             int "Daily budget, all hoppers (g)"
@@ -117,6 +123,7 @@ menu "Feeder"
             default 50
             help
                 PLACEHOLDER: set after welfare review. Applies to the sum of all hoppers.
+                Default = welfare.md proposal for a 10-hen flock; derive per site from flock size.
 
         config FEEDER_MIN_INTERVAL_S
             int "Minimum interval between scatters (s)"

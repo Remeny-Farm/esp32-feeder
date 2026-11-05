@@ -42,15 +42,18 @@ static bool s_have_last_state;
 
 /* ------------------------------------------------------------ helpers */
 
-static void persist_gate(void)
+/* Returns false when a save was needed and failed (it is retried on the next call). */
+static bool persist_gate(void)
 {
     if (gate_take_dirty(&s_gate) || s_save_pending) {
         const esp_err_t err = nv_save_gate(gate_state(&s_gate));
         s_save_pending = (err != ESP_OK);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "gate save failed: %s (retry on next change)", esp_err_to_name(err));
+            return false;
         }
     }
+    return true;
 }
 
 /* `at` buffer helper: returns buf when the clock is valid, else NULL (omit `at`). */
@@ -176,7 +179,9 @@ static void handle_motor_fault(gate_source_t src, const char *cmd_id, uint8_t ho
     }
 }
 
-/* cue -> delay -> doses -> spin -> commit -> report. The gate has admitted it. */
+/* reserve+save -> cue -> delay -> doses -> spin -> settle -> report. The gate has admitted it.
+ * Fail closed: the requested grams and last_scatter_at are reserved and saved to NVS BEFORE any
+ * motor or buzzer runs, so a reset while dispensing still counts them. */
 static void run_sequence(gate_source_t src, const char *cmd_id, const gate_dose_t *doses, size_t n,
                          bool with_cue)
 {
@@ -186,6 +191,20 @@ static void run_sequence(gate_source_t src, const char *cmd_id, const gate_dose_
         n = GATE_MAX_HOPPERS; /* cannot happen after the gate admitted the list */
     }
     bool faulted = false;
+
+    gate_time_t tm;
+    fclock_get(&tm);
+    if (!gate_reserve_scatter(&s_gate, &tm, doses, n)) {
+        ESP_LOGE(TAG, "scatter reserve failed: not dispensing");
+        return;
+    }
+    if (!persist_gate()) {
+        /* The reservation is not durable: a reset now would lose it. Do not dispense.
+         * Give the grams back; min_interval stays (last_scatter_at is kept). */
+        ESP_LOGE(TAG, "scatter reservation not saved: not dispensing");
+        gate_settle_scatter(&s_gate, &tm, actual); /* actual is all 0 here */
+        return;
+    }
 
     if (with_cue) {
         cue_play();
@@ -214,9 +233,8 @@ static void run_sequence(gate_source_t src, const char *cmd_id, const gate_dose_
     }
     motor_stop_all();
 
-    gate_time_t tm;
     fclock_get(&tm);
-    gate_commit_scatter(&s_gate, &tm, actual); /* counts even when all zero: the motors ran */
+    gate_settle_scatter(&s_gate, &tm, actual); /* lowers the reservation to the actual grams (0 allowed) */
 
     uint32_t reported[GATE_MAX_HOPPERS];
     for (size_t i = 0; i < n; i++) {
