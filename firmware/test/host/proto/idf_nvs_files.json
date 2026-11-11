@@ -1,0 +1,133 @@
+{
+  "commit": "e0991facf5ecb362af6aac1fae972139eb38d2e4",
+  "files": {
+    "components/esp_common/include/esp_attr.h": {
+      "git_sha1": "ee5a94a310f8bc79d32ed551dd8f433966256f28",
+      "sha256": "1548dd39cf8e4069b56d48bc791f2c6dda23e0f1086ff56bb713b522bd733bb0"
+    },
+    "components/esp_common/include/esp_compiler.h": {
+      "git_sha1": "3e278aa9c0dc4e36fd1c3fbd183ee6d3b174c0ef",
+      "sha256": "23b2b2714dbc87aa22fe413bb1d4903697c1b1839707fe106196a943cc47ec4d"
+    },
+    "components/esp_common/include/esp_err.h": {
+      "git_sha1": "58026d02e6930f7852170c95fa7058dfd9f170b8",
+      "sha256": "dcea6a47531d34026f988052a143fd3a9a9af4b176dbc86931dc3c519275afad"
+    },
+    "components/esp_rom/include/esp_rom_crc.h": {
+      "git_sha1": "39787ed14027854f6d27b53d15237e074a3e5183",
+      "sha256": "bd91ce2ccc86f340f73b91d953635a8ea9e6c999a2658328066ec8c0c8d93f5c"
+    },
+    "components/esp_rom/include/esp_rom_sys.h": {
+      "git_sha1": "d98f84e5b90699e81c8e25a7a4a39fccfc8358e8",
+      "sha256": "c2d946658f4a461c223fe4d5b6be2beb2b5008aa791d317496571b9dc67df746"
+    },
+    "components/esp_rom/include/linux/soc/reset_reasons.h": {
+      "git_sha1": "7cc86ffddfbc2b21cbac9e6485cdd5b9a2b82bd6",
+      "sha256": "e84a8b44bb80c1bc38486826ab7ba283c7a38b0c005aa77258f9e664cc237518"
+    },
+    "components/esp_rom/linux/esp_rom_crc.c": {
+      "git_sha1": "2454118fe086dd5f333d5a0cd6b5539ababb5365",
+      "sha256": "a16c4d0eb8614370288bf2ef9c3362376ecb020037051b019b8943d115cb52cc"
+    },
+    "components/log/include/esp_log.h": {
+      "git_sha1": "51c474937b528a913df98931f885336272b9f8cd",
+      "sha256": "a8b4ec2b76254297a94057b2b4b913bc9af444afa33d6f4f8cbdb324f69d175d"
+    },
+    "components/log/include/esp_log_internal.h": {
+      "git_sha1": "cbdb2db731f68d24b2c57ec9c8f1364a76f7f991",
+      "sha256": "97f6334457000a6b5998555405e50f6d280555374668478cea847f6879b6f9c8"
+    },
+    "components/nvs_flash/include/nvs.h": {
+      "git_sha1": "1f4715d64b6e59457b831099b00fcbae8e30ef20",
+      "sha256": "d961b401c3fa771c8cabdcf1ed19008b8044281b964990648d012c2ac81e0883"
+    },
+    "components/nvs_flash/include/nvs_handle.hpp": {
+      "git_sha1": "32f49ab759b44fc55a43ef52f3f9df3611f349ad",
+      "sha256": "e57cd9e1d142f58ab54f63490eec3471374d7c987440be5b69ef8107625d9299"
+    },
+    "components/nvs_flash/private_include/nvs_internal.h": {
+      "git_sha1": "1bf2cb8c4b2b076ff6133caf83b0058d9c736e68",
+      "sha256": "35bb059de16051719264201ada61359298b8ad65b9a7a2312963786e35ea0e4f"
+    },
+    "components/nvs_flash/src/compressed_enum_table.hpp": {
+      "git_sha1": "e276250d5f0eae68a373e44f79d76980ec9a0d26",
+      "sha256": "d58581136460d226d339a52d1370eaf0094ca03d4beb758fed6c4e19cf155119"
+    },
+    "components/nvs_flash/src/intrusive_list.h": {
+      "git_sha1": "9a8c6f228efde7f2b6fa5c8528e1938e281680b9",
+      "sha256": "8160b3e8f398779b0d96e06f17a86bc84e75dbd12ec680b33dc4a091aa83679a"
+    },
+    "components/nvs_flash/src/nvs.hpp": {
+      "git_sha1": "38bb8cb3589dff38be226fe7d75fcd02d1f39386",
+      "sha256": "7ed78d8cc4fd33b9f58a61333bfae14f1b7bcc0e04e86a5dc231f6002c2b719b"
+    },
+    "components/nvs_flash/src/nvs_handle_simple.cpp": {
+      "git_sha1": "d6423eb2761be30afff0dc772ee2a8a92ec12927",
+      "sha256": "ff65228c44ee4945f54bdb073251ff2e0e39b3b9de7db4caa1e576606e172b91"
+    },
+    "components/nvs_flash/src/nvs_item_hash_list.cpp": {
+      "git_sha1": "21bf8b315314c6b5aefa9eb7a12acd261cb1b9d3",
+      "sha256": "12e56f57671fb1b205cb27f07bf8b4c3cb4609c387c1bc7b60894925084d3d54"
+    },
+    "components/nvs_flash/src/nvs_item_hash_list.hpp": {
+      "git_sha1": "ead5eeb10fa0373e53224fde8da1e8310f798e71",
+      "sha256": "cf0cee7c9cbbf1c3a9663586e57d48bf3621bd365c2c0027ba764f2c660538f0"
+    },
+    "components/nvs_flash/src/nvs_memory_management.hpp": {
+      "git_sha1": "933f08256eeaff7899a286592ff1a2d909a5e2ae",
+      "sha256": "c55cab1362a4d48973f41b4825da3a1688e1781ac2abb5ac1ff4e69e1b616061"
+    },
+    "components/nvs_flash/src/nvs_page.cpp": {
+      "git_sha1": "a661dde6b3282ba33a29a75a03c6500e90411a92",
+      "sha256": "13f5a4af6cd4e273e360832ee2dbe284f7085b66eb15e9f5630e0cec43ff051a"
+    },
+    "components/nvs_flash/src/nvs_page.hpp": {
+      "git_sha1": "4aff32ad012e4ce4738b77eb14ae634bb1e7e3e5",
+      "sha256": "3e46979d35564b15c5d9f920b4d9762daac4bc7826171ba868acd658775af0f6"
+    },
+    "components/nvs_flash/src/nvs_pagemanager.cpp": {
+      "git_sha1": "9bbe32c98ab41959c10827b16292cca08b27e63d",
+      "sha256": "c1c827640852493c0cbffc45d9ef44a82367086c9ec37c0a6019c779cc8b0053"
+    },
+    "components/nvs_flash/src/nvs_pagemanager.hpp": {
+      "git_sha1": "4a1c19f7ecaddce006cc82ca9505f276c806547f",
+      "sha256": "a3a7084b3b93937832df7d5acca4858ab47150beaf40fcafe8bd9ddfbd91da1e"
+    },
+    "components/nvs_flash/src/nvs_storage.cpp": {
+      "git_sha1": "0cf28149ab8be920117e34bf377c2ce5dd1fa21a",
+      "sha256": "34d880497d9c290623eb3b595c43762e40bddf7a3215e18765b500715afb380e"
+    },
+    "components/nvs_flash/src/nvs_storage.hpp": {
+      "git_sha1": "3ea642e773b595f09b2e0ce7adf752aa987725da",
+      "sha256": "904df2f442969d354cf432490e44154c68e654714d75efdc506eba205ca7a991"
+    },
+    "components/nvs_flash/src/nvs_types.cpp": {
+      "git_sha1": "a9369a4e272d3f381b69d1e55064bd456e99e9ca",
+      "sha256": "ddabda97fab2b70ff42f6778b38998db14cdcbf54b27b9f8381eb4abf306020b"
+    },
+    "components/nvs_flash/src/nvs_types.hpp": {
+      "git_sha1": "53d3555693dfbe16a59fb6b489953decad214262",
+      "sha256": "09000b201a4541061bac9d0156b9854251592413ad6f8473ef98ea84e9a788ed"
+    },
+    "components/nvs_flash/src/partition.hpp": {
+      "git_sha1": "e649f84b200f3aaaa4672d068bce04f626420f4e",
+      "sha256": "eef9a93d22d4ba486301b45128124a320e6b2562d74d2f64d85f7d4b61f91fe9"
+    },
+    "components/nvs_flash/test_nvs_host/sdkconfig.h": {
+      "git_sha1": "0ecb2c18bb91d3f22735f241868a379e84dbaf45",
+      "sha256": "33f34440e4c324826246697877f58c300ecea3640b12fbd2c427d964df0d787f"
+    },
+    "components/partition_table/partitions_two_ota.csv": {
+      "git_sha1": "7aee909cd1efcb5a37fac1125c32d118b22cbb09",
+      "sha256": "879f7c300df5884ad763774238a8feea16c7ac5926a3a1aee9afffc8e94f6809"
+    },
+    "components/spi_flash/include/esp_spi_flash_counters.h": {
+      "git_sha1": "f8f368cd427936f29f5aa2396398be147adca276",
+      "sha256": "14d4691a204fb0041e3e5ffe8bc2971b9861ebc68dd1b04ccc58522dc7c7c77a"
+    },
+    "components/spi_flash/include/spi_flash_mmap.h": {
+      "git_sha1": "32e4ead2d3ccb894456bc497adf441a046900084",
+      "sha256": "8563401ddb1a72c58a558c31fbd78217bfe019701c01f6e5e24c00dba7f81ffb"
+    }
+  }
+}

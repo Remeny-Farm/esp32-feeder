@@ -107,7 +107,7 @@ static void test_v2_roundtrip_retains_expiry_and_wall_floor(void)
     CHECK_EQ(nv_save_gate(&state), ESP_OK);
 #ifdef GATE_LEGACY_IDS
     CHECK_EQ(sizes[0], sizeof(legacy_gate_state_t));
-    CHECK_EQ(sizes[1], sizeof state);
+    CHECK(sizes[1] < sizeof state); /* extension metadata omits the active-cache prefix */
 #else
     CHECK_EQ(sizes[0], sizeof(legacy_gate_state_t));
 #endif

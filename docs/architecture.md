@@ -69,7 +69,10 @@ Open decisions are listed at the end.
   permanent quarantine. The new active cache starts empty, so upgrades retain
   remote control without forgetting those old ids. Both caches have fixed size.
 - NVS keeps a v1-compatible `gate` snapshot for bootloader rollback and a full
-  `gate_v2` snapshot. Save succeeds only after both writes and their commit.
+  `gate_v2` extension containing safety metadata and the legacy quarantine.
+  Active ids are reconstructed from the v1 snapshot, avoiding a second copy of
+  that large ring on the default 16 KiB NVS partition. A pairing checksum detects
+  interrupted snapshot pairs. Save succeeds only after both writes and their commit.
   Interrupted/mismatched snapshot pairs preserve known budgets and faults and
   disable admission instead of starting empty. A service-button fault clear
   cannot clear this storage-integrity failure; the snapshots require repair.

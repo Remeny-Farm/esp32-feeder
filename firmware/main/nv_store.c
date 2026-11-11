@@ -61,6 +61,37 @@ static esp_err_t save_blob(const char *key, const void *buf, size_t size)
 static gate_state_t s_legacy;
 static unsigned char s_v1_blob[GATE_STATE_V1_SIZE];
 
+/* Active ids already live in the v1 snapshot. Only persist its extension;
+ * duplicating that 2472-byte prefix exhausts the default four-page NVS during
+ * copy-on-write replacement. The small safety prefix preserves conservative
+ * counters/faults when a multi-key save was interrupted. */
+typedef struct {
+    unsigned char safety[offsetof(gate_state_t, seen_ids)];
+    uint32_t format;
+    int64_t seen_expires_at;
+    int64_t clock_high_water;
+    uint64_t mirror_hash;
+    char legacy_ids[GATE_LEGACY_IDS][GATE_ID_BUF];
+    uint16_t legacy_count;
+    uint16_t active_count;
+    uint16_t active_head;
+    bool replay_untrusted;
+} gate_metadata_t;
+
+#define GATE_METADATA_FORMAT 1u
+static gate_metadata_t s_metadata;
+
+/* Pairing checksum for interrupted writes, not an authentication mechanism. */
+static uint64_t snapshot_hash(const void *data, size_t len)
+{
+    const unsigned char *bytes = data;
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (size_t i = 0; i < len; i++) {
+        hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
 /* Keep the last active ids plus as many old quarantined ids as fit in v1's
  * bounded ring. A rollback must not discard all legacy ids on its first boot. */
 static void v1_snapshot(const gate_state_t *st)
@@ -97,21 +128,35 @@ bool nv_load_gate(gate_state_t *out)
         if (opened == ESP_ERR_NVS_NOT_FOUND) return false;
         goto corrupt;
     }
-    size_t v2_size = sizeof *out, v1_size = GATE_STATE_V1_SIZE;
-    const esp_err_t v2_err = nvs_get_blob(h, KEY_GATE_V2, out, &v2_size);
+    size_t v2_size = sizeof s_metadata, v1_size = GATE_STATE_V1_SIZE;
+    const esp_err_t v2_err = nvs_get_blob(h, KEY_GATE_V2, &s_metadata, &v2_size);
     const esp_err_t v1_err = nvs_get_blob(h, KEY_GATE, &s_legacy, &v1_size);
     nvs_close(h);
     if (v2_err == ESP_ERR_NVS_NOT_FOUND && v1_err == ESP_ERR_NVS_NOT_FOUND) return false;
     const bool v1_ok = v1_err == ESP_OK && v1_size == GATE_STATE_V1_SIZE &&
                        s_legacy.magic == GATE_STATE_MAGIC && s_legacy.version == 1u;
-    const bool v2_ok = v2_err == ESP_OK && v2_size == sizeof *out &&
-                       out->magic == GATE_STATE_MAGIC && out->version == GATE_STATE_VERSION &&
-                       out->seen_count <= GATE_SEEN_IDS && out->legacy_count <= GATE_LEGACY_IDS;
+    const bool v2_ok = v2_err == ESP_OK && v2_size == sizeof s_metadata &&
+                       s_metadata.format == GATE_METADATA_FORMAT &&
+                       s_metadata.active_count <= GATE_SEEN_IDS &&
+                       s_metadata.legacy_count <= GATE_LEGACY_IDS;
     if (v2_ok) {
+        memcpy(out, s_metadata.safety, sizeof s_metadata.safety);
+        out->seen_expires_at = s_metadata.seen_expires_at;
+        out->clock_high_water = s_metadata.clock_high_water;
+        out->legacy_count = s_metadata.legacy_count;
+        out->seen_count = s_metadata.active_count;
+        out->seen_head = s_metadata.active_head;
+        out->replay_untrusted = s_metadata.replay_untrusted;
+        memcpy(out->legacy_ids, s_metadata.legacy_ids, sizeof out->legacy_ids);
+        const bool ids_ok = v1_ok && s_legacy.seen_count <= GATE_SEEN_IDS &&
+                            s_legacy.seen_count >= out->seen_count;
+        if (ids_ok) {
+            memcpy(out->seen_ids, s_legacy.seen_ids + s_legacy.seen_count - out->seen_count,
+                   out->seen_count * GATE_ID_BUF);
+        }
         /* NVS commits individual keys; a reset may interrupt a multi-key save.
          * A mismatched pair must never start from an empty, running gate. */
-        v1_snapshot(out);
-        if (!v1_ok || memcmp(s_v1_blob, &s_legacy, GATE_STATE_V1_SIZE) != 0) {
+        if (!ids_ok || snapshot_hash(&s_legacy, GATE_STATE_V1_SIZE) != s_metadata.mirror_hash) {
             if (v1_ok) {
                 if (s_legacy.day > out->day) out->day = s_legacy.day;
                 for (uint8_t i = 0; i < GATE_MAX_HOPPERS; i++) {
@@ -162,7 +207,18 @@ esp_err_t nv_save_gate(const gate_state_t *st)
     v1_snapshot(st);
     /* Keep rollback's original key and layout usable. Save succeeds only after
      * both snapshots have been written and committed; actuation waits for it. */
-    err = nvs_set_blob(h, KEY_GATE_V2, st, sizeof *st);
+    memset(&s_metadata, 0, sizeof s_metadata);
+    memcpy(s_metadata.safety, st, sizeof s_metadata.safety);
+    s_metadata.format = GATE_METADATA_FORMAT;
+    s_metadata.seen_expires_at = st->seen_expires_at;
+    s_metadata.clock_high_water = st->clock_high_water;
+    s_metadata.mirror_hash = snapshot_hash(s_v1_blob, sizeof s_v1_blob);
+    memcpy(s_metadata.legacy_ids, st->legacy_ids, sizeof s_metadata.legacy_ids);
+    s_metadata.legacy_count = st->legacy_count;
+    s_metadata.active_count = st->seen_count;
+    s_metadata.active_head = st->seen_head;
+    s_metadata.replay_untrusted = st->replay_untrusted;
+    err = nvs_set_blob(h, KEY_GATE_V2, &s_metadata, sizeof s_metadata);
     if (err == ESP_OK) err = nvs_set_blob(h, KEY_GATE, s_v1_blob, sizeof s_v1_blob);
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
