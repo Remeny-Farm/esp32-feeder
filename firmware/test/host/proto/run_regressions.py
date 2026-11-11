@@ -51,7 +51,7 @@ def main():
     def build_run(name, sources, arguments=()):
         binary = args.build_dir / name
         subprocess.run(common + list(map(str, sources)) + ["-o", str(binary)], check=True)
-        env = dict(os.environ, FEEDER_TEST_ROLLBACK_BLOB=str(args.build_dir / "rollback-gate.bin"))
+        env = dict(os.environ, FEEDER_TEST_ROLLBACK_BLOB=str(args.build_dir / "rollback-gate.bin"), FEEDER_BUSY_ACK_JSON=str(args.build_dir / "actual-busy-ack.json"))
         result = subprocess.run([str(binary), *arguments], cwd=root, env=env)
         if result.returncode:
             failures.append(name)

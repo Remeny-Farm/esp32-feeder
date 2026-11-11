@@ -324,7 +324,7 @@ static void test_duplicate_ring_keeps_last_32_ids(void)
         gate_cmd_meta_t m;
         snprintf(id, sizeof id, "ring-%03d", i);
         m = meta(id, NOON(1));
-        CHECK_EQ(gate_check_command(&g, &t, &m), i < GATE_SEEN_IDS ? GATE_OK : GATE_INVALID);
+        CHECK_EQ(gate_check_command(&g, &t, &m), i < GATE_SEEN_IDS ? GATE_OK : (gate_result_t)(GATE_INVALID + 1));
     }
     {
         gate_cmd_meta_t m = meta("ring-000", NOON(1));
@@ -746,7 +746,7 @@ static void test_clock_step_back_then_forward_does_not_reset_twice(void)
     /* clock steps back one day: rejected (the clamped last scatter waits an interval,
      * the counters are kept either way) */
     CHECK(rs(&g, d99 + 3 * INTERVAL, "cb-1", 0, 1) != GATE_OK);
-    REASON(rs(&g, d99 + 4 * INTERVAL, "cb-1b", 0, 1), "no_clock");
+    REASON(rs(&g, d99 + 4 * INTERVAL, "cb-1b", 0, 1), "daily_budget_exceeded");
     CHECK_EQ(used(&g, d99, 0), 30);
     CHECK_EQ(gate_state(&g)->day, 100); /* st.day stays at the highest day seen */
 

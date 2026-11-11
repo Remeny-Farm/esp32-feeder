@@ -1,6 +1,7 @@
 /* Compile with real proto.c + cJSON; run from repository root for fixtures. */
 #include "mini_test.h"
 #include "proto.h"
+#include "cJSON.h"
 #include <stdlib.h>
 
 static const char *names[] = {"grain", "pellet", "mealworm"};
@@ -56,8 +57,30 @@ static void test_nested_fields(void)
     }
 }
 
+static void test_actual_busy_ack_builder(void)
+{
+    char *json = proto_build_ack("5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69", false,
+                                gate_reason_str((gate_result_t)(GATE_INVALID + 1)), "2026-11-05T10:00:00Z");
+    CHECK(json != NULL);
+    if (!json) return;
+    cJSON *ack = cJSON_Parse(json);
+    CHECK(ack != NULL);
+    if (ack) {
+        const cJSON *status = cJSON_GetObjectItemCaseSensitive(ack, "status");
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(ack, "reason");
+        CHECK(cJSON_IsString(status)); CHECK(cJSON_IsString(reason));
+        if (cJSON_IsString(status)) CHECK_STR(status->valuestring, "rejected");
+        if (cJSON_IsString(reason)) CHECK_STR(reason->valuestring, "busy");
+        cJSON_Delete(ack);
+    }
+    const char *path = getenv("FEEDER_BUSY_ACK_JSON");
+    if (path) { FILE *f = fopen(path, "wb"); CHECK(f != NULL); if (f) { CHECK_EQ(fwrite(json, 1, strlen(json), f), strlen(json)); fclose(f); } }
+    proto_free(json);
+}
+
 int main(void)
 {
+    RUN_TEST(test_actual_busy_ack_builder);
     RUN_TEST(test_committed_fixtures);
     RUN_TEST(test_nested_fields);
     return mt_summary();

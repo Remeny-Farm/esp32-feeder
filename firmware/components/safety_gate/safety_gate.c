@@ -71,39 +71,32 @@ static bool legacy_contains(const gate_t *g, const char *id)
     return false;
 }
 
-static bool seen_contains(const gate_t *g, const char *id)
+static int seen_index(const gate_t *g, const char *id)
 {
     for (uint16_t i = 0; i < g->st.seen_count; i++) {
-        if (strncmp(g->st.seen_ids[i], id, GATE_ID_BUF) == 0) {
-            return true;
-        }
+        if (strncmp(g->st.seen_ids[i], id, GATE_ID_BUF) == 0) return i;
     }
-    return legacy_contains(g, id);
+    return -1;
 }
 
-static bool seen_record(gate_t *g, const char *id)
+static bool seen_record(gate_t *g, const char *id, int64_t expiry)
 {
     if (g->st.seen_count == GATE_SEEN_IDS) {
-        /* Never forget a live command to make room. Stop safely even when
-         * the operator's next pause cannot be recorded. */
         gate_set_paused(g, true);
-        return false;
+        return false; /* truthful busy: this new id was not consumed */
     }
-    char *slot = g->st.seen_ids[g->st.seen_head];
-    size_t n = strlen(id); /* id_ok() already bounded it */
-    memcpy(slot, id, n);
-    memset(slot + n, 0, GATE_ID_BUF - n);
-    g->st.seen_head = (uint16_t)((g->st.seen_head + 1u) % GATE_SEEN_IDS);
-    if (g->st.seen_count < GATE_SEEN_IDS) {
-        g->st.seen_count++;
-    }
+    const uint16_t i = g->st.seen_count++;
+    const size_t n = strlen(id);
+    memcpy(g->st.seen_ids[i], id, n);
+    memset(g->st.seen_ids[i] + n, 0, GATE_ID_BUF - n);
+    g->st.seen_expires_at[i] = expiry;
+    g->st.seen_head = g->st.seen_count % GATE_SEEN_IDS;
     g->dirty = true;
     return true;
 }
 
-/* Wall time determines payload validity; elapsed time determines silence.
- * Both must have passed before ids can be forgotten. Persist the wall floor
- * and latest expiry so a reboot cannot revive an already consumed payload. */
+/* Quiet time is elapsed time; expiration belongs to each installed payload.
+ * Raw wall samples never advance a global admission watermark. */
 static void seen_touch(gate_t *g, const gate_time_t *tm)
 {
     if (tm == NULL) {
@@ -111,14 +104,28 @@ static void seen_touch(gate_t *g, const gate_time_t *tm)
         return;
     }
     const uint64_t horizon = GATE_MAX_FUTURE_S + FEEDER_CMD_MAX_TTL_S;
-    if (clock_ok(tm) && tm->now >= g->st.clock_high_water &&
-        g->seen_timer_started && tm->monotonic_s >= g->seen_last_mono &&
-        tm->monotonic_s - g->seen_last_mono > horizon &&
-        tm->now > g->st.seen_expires_at) {
-        g->st.seen_count = 0;
-        g->st.seen_head = 0;
-        g->st.seen_expires_at = 0;
-        g->dirty = true;
+    if (clock_ok(tm) && g->seen_timer_started && tm->monotonic_s >= g->seen_last_mono &&
+        tm->monotonic_s - g->seen_last_mono > horizon) {
+        uint16_t keep = 0;
+        for (uint16_t i = 0; i < g->st.seen_count; i++) {
+            const int64_t expiry = g->st.seen_expires_at[i];
+            if (tm->now > expiry) {
+                if (expiry > g->st.retired_expiry_floor) g->st.retired_expiry_floor = expiry;
+                g->dirty = true;
+            } else {
+                if (keep != i) {
+                    memcpy(g->st.seen_ids[keep], g->st.seen_ids[i], GATE_ID_BUF);
+                    g->st.seen_expires_at[keep] = expiry;
+                }
+                keep++;
+            }
+        }
+        if (keep != g->st.seen_count) {
+            memset(g->st.seen_ids + keep, 0, (GATE_SEEN_IDS - keep) * GATE_ID_BUF);
+            memset(g->st.seen_expires_at + keep, 0, (GATE_SEEN_IDS - keep) * sizeof(int64_t));
+            g->st.seen_count = keep;
+            g->st.seen_head = keep % GATE_SEEN_IDS;
+        }
     }
     g->seen_last_mono = tm->monotonic_s;
     g->seen_timer_started = true;
@@ -188,6 +195,7 @@ const char *gate_reason_str(gate_result_t r)
     case GATE_HOPPER_EMPTY: return "hopper_empty";
     case GATE_FAULT: return "fault";
     case GATE_INVALID: return "invalid";
+    case GATE_BUSY: return "busy";
     }
     return "invalid";
 }
@@ -308,7 +316,7 @@ bool gate_restore(gate_t *g, const gate_state_t *saved)
     }
     if (st->day < 0 || st->last_scatter_at < 0 || st->last_cue_at < 0 ||
         st->seen_head >= GATE_SEEN_IDS || st->seen_count > GATE_SEEN_IDS ||
-        st->seen_expires_at < 0 || st->clock_high_water < 0 || st->legacy_count > GATE_LEGACY_IDS) {
+        st->retired_expiry_floor < 0 || st->legacy_count > GATE_LEGACY_IDS) {
         return false;
     }
     if ((st->fault_mask & ~(GATE_FAULT_STALL | GATE_FAULT_LID_OPEN | GATE_FAULT_MOTOR_CONTROLLER |
@@ -394,46 +402,31 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     if (src == GATE_SRC_REMOTE && (meta == NULL || !id_ok(meta->id))) {
         return GATE_INVALID;
     }
+    if (src == GATE_SRC_REMOTE) seen_touch(g, tm);
+    bool seen = false;
     if (src == GATE_SRC_REMOTE) {
-        seen_touch(g, tm);
-    }
-    /* TTL/order-invalid payloads can never become admissible. Their untrusted
-     * far-future expiry must not poison retention of otherwise valid commands. */
-    if (src == GATE_SRC_REMOTE && !legacy_contains(g, meta->id) &&
-        meta->expires_at >= meta->issued_at &&
-        (uint64_t)meta->expires_at - (uint64_t)meta->issued_at <= (uint64_t)FEEDER_CMD_MAX_TTL_S &&
-        meta->expires_at > g->st.seen_expires_at) {
-        g->st.seen_expires_at = meta->expires_at;
-        g->dirty = true;
-    }
-    if (!clock_ok(tm) || tm->now < g->st.clock_high_water) {
-        /* Remote: fail closed. Random: quiet hours are unknowable before the
-         * first sync, so the random scheduler must not scatter either. */
-        if (src == GATE_SRC_REMOTE && !seen_contains(g, meta->id)) {
-            seen_record(g, meta->id); /* a replay after the clock arrives is `duplicate` */
+        const int index = seen_index(g, meta->id);
+        const bool legacy = legacy_contains(g, meta->id);
+        seen = index >= 0 || legacy;
+        const bool lifetime = meta->expires_at >= meta->issued_at &&
+            (uint64_t)meta->expires_at - (uint64_t)meta->issued_at <= (uint64_t)FEEDER_CMD_MAX_TTL_S;
+        const int64_t expiry = lifetime ? meta->expires_at : (clock_ok(tm) ? tm->now : 0);
+        if (index >= 0 && lifetime && expiry > g->st.seen_expires_at[index]) {
+            g->st.seen_expires_at[index] = expiry; /* retries never shorten a protected id */
+            g->dirty = true;
+        } else if (!seen && !seen_record(g, meta->id, expiry)) {
+            return GATE_BUSY;
         }
-        return GATE_NO_CLOCK;
     }
-    if (tm->now > g->st.clock_high_water) {
-        g->st.clock_high_water = tm->now;
-        g->dirty = true;
-    }
-    if (src == GATE_SRC_RANDOM) {
-        return GATE_OK;
-    }
-    /* Record the id on every remote evaluation, whatever the outcome. */
-    bool seen = seen_contains(g, meta->id);
-    const bool recorded = seen || seen_record(g, meta->id);
+    if (!clock_ok(tm)) return GATE_NO_CLOCK;
+    if (src == GATE_SRC_RANDOM) return GATE_OK;
     if (tm->now > meta->expires_at || meta->issued_at > tm->now + GATE_MAX_FUTURE_S ||
         meta->expires_at < meta->issued_at ||
-        /* expires_at >= issued_at here: the unsigned difference cannot overflow */
-        (uint64_t)meta->expires_at - (uint64_t)meta->issued_at > (uint64_t)FEEDER_CMD_MAX_TTL_S) {
+        (uint64_t)meta->expires_at - (uint64_t)meta->issued_at > (uint64_t)FEEDER_CMD_MAX_TTL_S ||
+        meta->expires_at <= g->st.retired_expiry_floor) {
         return GATE_EXPIRED;
     }
-    if (seen) {
-        return GATE_DUPLICATE;
-    }
-    return recorded ? GATE_OK : GATE_INVALID;
+    return seen ? GATE_DUPLICATE : GATE_OK;
 }
 
 /* Dose list structure: step 4. */
@@ -490,10 +483,15 @@ bool gate_note_id(gate_t *g, const char *id)
     if (!g->ready || !id_ok(id)) {
         return false;
     }
-    seen_touch(g, NULL); /* no expiry available: keep this cache conservatively */
-    g->st.seen_expires_at = INT64_MAX;
-    g->dirty = true;
-    return seen_contains(g, id) || seen_record(g, id);
+    seen_touch(g, NULL);
+    if (legacy_contains(g, id)) return true;
+    const int index = seen_index(g, id);
+    if (index >= 0) {
+        g->st.seen_expires_at[index] = INT64_MAX; /* no expiry was supplied */
+        g->dirty = true;
+        return true;
+    }
+    return seen_record(g, id, INT64_MAX);
 }
 
 gate_result_t gate_check_cue(gate_t *g, const gate_time_t *tm, gate_source_t src, const gate_cmd_meta_t *meta)

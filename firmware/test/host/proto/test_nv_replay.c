@@ -16,10 +16,10 @@ typedef struct {
     char seen_ids[GATE_SEEN_IDS][GATE_ID_BUF];
     uint16_t seen_head, seen_count;
 } legacy_gate_state_t;
-static unsigned char blobs[2][sizeof(gate_state_t)];
-static size_t sizes[2];
-static int commits, fail_mirror;
-static int slot(const char *key) { return strcmp(key, "gate_v2") == 0 ? 1 : 0; }
+static unsigned char blobs[3][sizeof(gate_state_t)];
+static size_t sizes[3];
+static int commits, fail_mirror, fail_metadata;
+static int slot(const char *key) { return strcmp(key, "gate_v2") == 0 ? 1 : strcmp(key, "gate_legacy") == 0 ? 2 : 0; }
 esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *h)
 { (void)ns; (void)mode; *h = 1; return ESP_OK; }
 void nvs_close(nvs_handle_t h) { (void)h; }
@@ -33,7 +33,7 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *dst, size_t *len)
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *src, size_t len)
 {
     (void)h; int i = slot(key);
-    if (i == 0 && fail_mirror) return ESP_ERR_NVS_INVALID_LENGTH;
+    if ((i == 0 && fail_mirror) || (i == 1 && fail_metadata)) return ESP_ERR_NVS_INVALID_LENGTH;
     memcpy(blobs[i], src, len); sizes[i] = len; return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h; commits++; return ESP_OK; }
@@ -49,7 +49,7 @@ static void test_legacy_load_preserves_state_and_ids(void)
     gate_runtime_limits_clear(&old.runtime); old.runtime.daily_total_g = 9;
     for (int i = 0; i < GATE_SEEN_IDS; i++) snprintf(old.seen_ids[i], GATE_ID_BUF, "legacy-%d", i);
     strcpy(old.seen_ids[0], "legacy-future-resume"); old.seen_count = GATE_SEEN_IDS; old.seen_head = 0;
-    memcpy(blobs[0], &old, sizeof old); sizes[0] = sizeof old; sizes[1] = 0;
+    memcpy(blobs[0], &old, sizeof old); sizes[0] = sizeof old; sizes[1] = sizes[2] = 0;
     gate_state_t loaded;
     CHECK(nv_load_gate(&loaded));
     CHECK_EQ(loaded.version, GATE_STATE_VERSION);
@@ -101,8 +101,17 @@ static void test_v2_roundtrip_retains_expiry_and_wall_floor(void)
     gate_state_t state, loaded;
     memset(&state, 0, sizeof state);
     state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
-    state.paused = true; state.seen_expires_at = GATE_MIN_VALID_EPOCH + 1300;
+    state.paused = true;
+#ifdef GATE_PER_ID_EXPIRY
+    state.retired_expiry_floor = GATE_MIN_VALID_EPOCH + 1000;
+    strcpy(state.seen_ids[0], "negative-epoch"); strcpy(state.seen_ids[1], "future-epoch");
+    state.seen_count = state.seen_head = 2;
+    state.seen_expires_at[0] = -INT64_C(62167219200);
+    state.seen_expires_at[1] = GATE_MIN_VALID_EPOCH + 1300;
+#else
+    state.seen_expires_at = GATE_MIN_VALID_EPOCH + 1300;
     state.clock_high_water = GATE_MIN_VALID_EPOCH + 1000;
+#endif
     gate_runtime_limits_clear(&state.runtime);
     CHECK_EQ(nv_save_gate(&state), ESP_OK);
 #ifdef GATE_LEGACY_IDS
@@ -154,6 +163,40 @@ static void test_partial_save_disables_admission_and_preserves_budgets(void)
 #endif
 }
 
+static void test_three_key_interruption_and_unknown_format(void)
+{
+#ifdef GATE_PER_ID_EXPIRY
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    state.used_g[0] = state.used_total_g = 7;
+    state.paused = true; state.fault_mask = GATE_FAULT_STALL;
+    gate_runtime_limits_clear(&state.runtime);
+    state.runtime.daily_total_g = 9;
+    state.legacy_count = 1; strcpy(state.legacy_ids[0], "old-quarantine");
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* Simulate power loss after immutable legacy changed, before metadata. */
+    strcpy(state.legacy_ids[0], "replacement-quarantine");
+    fail_metadata = 1; CHECK(nv_save_gate(&state) != ESP_OK); fail_metadata = 0;
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); CHECK_EQ(loaded.runtime.daily_total_g, 9);
+    CHECK(loaded.fault_mask & GATE_FAULT_STALL);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* Missing or noncanonical third key must never silently erase quarantine. */
+    const size_t legacy_size = sizes[2]; sizes[2] = 0;
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); sizes[2] = legacy_size;
+    blobs[2][6] = 1; /* canonical legacy reserved field must be zero */
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* An unreleased/unknown metadata format preserves deployed v1 budgets. */
+    uint32_t unknown = UINT32_MAX; memcpy(blobs[1], &unknown, sizeof unknown);
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); CHECK_EQ(loaded.runtime.daily_total_g, 9);
+    CHECK(loaded.fault_mask & GATE_FAULT_STALL);
+#endif
+}
+
 static void test_export_rollback_snapshot(void)
 {
     gate_state_t state;
@@ -194,12 +237,39 @@ static void test_full_length_printable_legacy_ids_roundtrip(void)
 #endif
 }
 
+static void test_signed_expiry_roundtrip_and_max_after_reload(void)
+{
+#ifdef GATE_PER_ID_EXPIRY
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    gate_runtime_limits_clear(&state.runtime);
+    const int64_t epochs[] = {-INT64_C(62167219200), -1, 0, INT64_C(253402300799), INT64_MAX, INT64_MIN};
+    state.seen_count = state.seen_head = sizeof epochs / sizeof epochs[0];
+    for (uint16_t i = 0; i < state.seen_count; i++) {
+        snprintf(state.seen_ids[i], GATE_ID_BUF, "epoch-%u", i);
+        state.seen_expires_at[i] = epochs[i];
+    }
+    CHECK_EQ(nv_save_gate(&state), ESP_OK); CHECK(nv_load_gate(&loaded));
+    CHECK(!loaded.replay_untrusted);
+    for (uint16_t i = 0; i < state.seen_count; i++) CHECK_EQ(loaded.seen_expires_at[i], epochs[i] == INT64_MIN ? INT64_MAX : epochs[i]);
+    gate_limits_t limits = {.hopper_count = 1, .max_dose_g = {10}, .daily_budget_g = {50}, .daily_total_g = 100};
+    gate_t g; CHECK(gate_init(&g, &limits)); CHECK(gate_restore(&g, &loaded));
+    gate_time_t t = {.now = GATE_MIN_VALID_EPOCH + 100, .clock_valid = true, .local_minute = 720};
+    gate_cmd_meta_t earlier = {.id = "epoch-4", .issued_at = t.now, .expires_at = t.now + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &earlier), GATE_DUPLICATE);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[4], INT64_MAX);
+#endif
+}
+
 int main(void)
 {
     RUN_TEST(test_legacy_load_preserves_state_and_ids);
     RUN_TEST(test_v2_roundtrip_retains_expiry_and_wall_floor);
     RUN_TEST(test_partial_save_disables_admission_and_preserves_budgets);
     RUN_TEST(test_full_length_printable_legacy_ids_roundtrip);
+    RUN_TEST(test_signed_expiry_roundtrip_and_max_after_reload);
+    RUN_TEST(test_three_key_interruption_and_unknown_format);
     RUN_TEST(test_export_rollback_snapshot);
     return mt_summary();
 }

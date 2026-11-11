@@ -19,7 +19,8 @@
         "daily_budget_exceeded",
         "hopper_empty",
         "fault",
-        "invalid"
+        "invalid",
+        "busy"
       ]
     },
     "at": { "$ref": "common.schema.json#/$defs/timestamp", "description": "Present whenever the device clock is valid." }

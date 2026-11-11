@@ -165,7 +165,7 @@ static void test_overload_rejection_is_persisted_and_published(void)
     CHECK_EQ(state_queues, 1);
     CHECK_EQ(sequences, 0);
     CHECK_EQ(cues, 0);
-    CHECK(strstr(last_ack, "invalid") != NULL);
+    CHECK(strstr(last_ack, "busy") != NULL);
 }
 static void test_unknown_limit_does_not_reset_budget(void)
 {
@@ -183,7 +183,11 @@ static void test_schema_invalid_expiry_does_not_pin_cache(void)
     setup();
     run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"pause\",\"issued_at\":\"2099-01-01T00:00:00Z\",\"expires_at\":\"2099-01-01T00:05:00Z\",\"extra\":1}");
 #if GATE_STATE_VERSION >= 2
+#ifdef GATE_PER_ID_EXPIRY
+    CHECK(gate_state(&s_gate)->seen_expires_at[0] <= INT64_C(1793872800));
+#else
     CHECK(gate_state(&s_gate)->seen_expires_at <= INT64_C(1793872800));
+#endif
 #endif
     CHECK(!gate_paused(&s_gate));
     CHECK(strstr(last_ack, "invalid") != NULL);

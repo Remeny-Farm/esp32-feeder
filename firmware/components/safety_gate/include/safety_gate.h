@@ -25,12 +25,13 @@
  *                     expires_at < issued_at, or the lifetime
  *                     expires_at - issued_at > FEEDER_CMD_MAX_TTL_S. The TTL
  *                     cap bounds replay retention together with clock skew.
- *   3. duplicate  R   id is in the cache of GATE_SEEN_IDS ids. The cache is
- *                     cleared only after monotonic TTL + clock-skew silence
- *                     AND every recorded expiry. Wall-clock rollback fails
- *                     closed as no_clock, including after reboot. Full cache: fail closed (`invalid`)
- *                     and pause; never evict a live id. Rejected attempts also
- *                     extend retention, including attempts without a clock.
+ *   3. duplicate  R   id is in the active cache or permanent legacy quarantine.
+ *                     Installed ids retain their own MAX expiry. After 600 s
+ *                     monotonic silence, only expired slots can be retired.
+ *                     A persisted payload-expiry cutoff prevents old retired
+ *                     payloads becoming eligible after a clock correction.
+ *      busy       R   new id cannot fit: pause, reject, do NOT consume that id.
+ *                     A later retry may be evaluated after capacity recovers.
  *   4. invalid        scatter only: dose list malformed (1..hopper_count
  *                     doses, unique hopper index < hopper_count, grams >= 1)
  *   5. paused         BOTH paths: a paused feeder neither cues nor scatters,
@@ -90,7 +91,7 @@ extern "C" {
 #define GATE_MAX_FUTURE_S (5 * 60)
 /* Longest accepted lifetime of a remote command (expires_at - issued_at).
  * The replay cache retains ids for this lifetime plus clock skew after the
- * last remote attempt. A longer lifetime is rejected as `expired`. The app
+ * last remote attempt, and each installed id until its own expiry. The app
  * may override the value with a compiler definition. */
 #ifndef FEEDER_CMD_MAX_TTL_S
 #define FEEDER_CMD_MAX_TTL_S 300
@@ -113,7 +114,8 @@ typedef enum {
     GATE_BUDGET_EXCEEDED,
     GATE_HOPPER_EMPTY,
     GATE_FAULT,
-    GATE_INVALID
+    GATE_INVALID,
+    GATE_BUSY /* new id not consumed: active replay capacity exhausted */
 } gate_result_t;
 
 /* Protocol reason string of a result ("no_clock", ...). NULL for GATE_OK. */
@@ -167,7 +169,7 @@ void gate_runtime_limits_clear(gate_runtime_limits_t *rt);
 typedef struct {
     int64_t now;            /* UTC epoch seconds */
     uint64_t monotonic_s;   /* elapsed seconds since boot; never wall-clock time */
-    bool clock_valid;       /* SNTP synced at least once since boot */
+    bool clock_valid;       /* trusted clock established since boot */
     uint16_t local_minute;  /* local minutes since midnight, 0..1439 */
     int64_t local_day;      /* local calendar day number; +1 per local midnight */
 } gate_time_t;
@@ -186,7 +188,8 @@ typedef struct {
 
 /* ---- persisted state (save it to NVS when gate_take_dirty() is true) ---- */
 #define GATE_STATE_MAGIC 0x47415445u /* "GATE" */
-#define GATE_STATE_VERSION 2u
+#define GATE_STATE_VERSION 3u
+#define GATE_PER_ID_EXPIRY 1
 
 typedef struct {
     uint32_t magic;
@@ -203,10 +206,10 @@ typedef struct {
     bool paused;
     gate_runtime_limits_t runtime;
     char seen_ids[GATE_SEEN_IDS][GATE_ID_BUF];
-    uint16_t seen_head;                          /* next slot to overwrite */
+    uint16_t seen_head;                          /* next free slot, wraps to zero when full */
     uint16_t seen_count;
-    int64_t seen_expires_at;                     /* latest expiry, including rejected/overflow ids */
-    int64_t clock_high_water;                    /* rollback cannot revive expired payloads */
+    int64_t seen_expires_at[GATE_SEEN_IDS];      /* MAX expiry of each installed id */
+    int64_t retired_expiry_floor;                /* expiry cutoff of discarded remote payloads */
     char legacy_ids[GATE_LEGACY_IDS][GATE_ID_BUF]; /* unknown v1 expiry: never recycled */
     uint16_t legacy_count;
     bool replay_untrusted;                       /* mismatched persistent snapshots: disable admission */

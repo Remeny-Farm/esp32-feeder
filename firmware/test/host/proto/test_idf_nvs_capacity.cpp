@@ -77,6 +77,28 @@ static bool require(esp_err_t error, const char *operation)
     return false;
 }
 
+/* Capture every production key before closing and compare immediately on
+ * reopen. No following save can repair a missing/stale blob before the check. */
+static const char *gate_keys[] = {"gate", "gate_v2", "gate_legacy"};
+static std::vector<unsigned char> saved_blobs[3];
+static bool snapshot_blobs(bool compare)
+{
+    nvs_handle_t handle;
+    if (!require(nvs_open("feeder", NVS_READONLY, &handle), "open readback")) return false;
+    for (size_t i = 0; i < 3; i++) {
+#ifndef GATE_PER_ID_EXPIRY
+        if (i == 2) continue; // historical two-key implementations
+#endif
+        size_t len = 0;
+        if (!require(nvs_get_blob(handle, gate_keys[i], nullptr, &len), "read blob size")) return false;
+        std::vector<unsigned char> actual(len);
+        if (!require(nvs_get_blob(handle, gate_keys[i], actual.data(), &len), "read raw blob")) return false;
+        if (compare && actual != saved_blobs[i]) { std::printf("FAIL stale/missing %s on reopen\n", gate_keys[i]); return false; }
+        if (!compare) saved_blobs[i] = actual;
+    }
+    nvs_close(handle); return true;
+}
+
 int main()
 {
     static_assert(nvs::Page::ENTRY_COUNT == 126, "pinned NVS page geometry changed");
@@ -116,8 +138,13 @@ int main()
     }
     for (uint32_t update = 1; update <= 512; update++) {
         state.used_g[0] = state.used_total_g = update;
+#ifdef GATE_PER_ID_EXPIRY
+        state.retired_expiry_floor = GATE_MIN_VALID_EPOCH + update;
+        for (int i = 0; i < GATE_SEEN_IDS; i++) state.seen_expires_at[i] = state.retired_expiry_floor + 300;
+#else
         state.clock_high_water = GATE_MIN_VALID_EPOCH + update;
         state.seen_expires_at = state.clock_high_water + 300;
+#endif
         if (!require(nv_save_gate(&state), "changed snapshot save")) {
             std::printf("failed at changed save %u\n", static_cast<unsigned>(update)); return 1;
         }
@@ -129,11 +156,18 @@ int main()
             std::printf("FAIL roundtrip after changed save %u\n", static_cast<unsigned>(update)); return 1;
         }
         if (update % 64 == 0) {
+            if (!snapshot_blobs(false)) return 1;
             instance.reset(new (std::nothrow) nvs::Storage(&flash));
             storage = instance.get();
-            if (!require(storage->init(0, 4), "reopen allocated pages")) return 1;
+            if (!require(storage->init(0, 4), "reopen allocated pages") || !snapshot_blobs(true)) return 1;
+            gate_state_t reopened = {};
+            if (!nv_load_gate(&reopened) || reopened.replay_untrusted || reopened.used_g[0] != update ||
+                std::strcmp(reopened.legacy_ids[63], "legacy-63") || std::strcmp(reopened.seen_ids[63], "active-63")) return 1;
         }
     }
+    if (!snapshot_blobs(false)) return 1;
+    instance.reset(new (std::nothrow) nvs::Storage(&flash)); storage = instance.get();
+    if (!require(storage->init(0, 4), "final reopen") || !snapshot_blobs(true)) return 1;
     // Verify GC and reopen did not trade other consumers' data for gate space.
     for (uint32_t i = 0; i < 64; i++) {
         char key[16]; std::snprintf(key, sizeof key, "setting%u", static_cast<unsigned>(i));
@@ -149,7 +183,7 @@ int main()
     if (!nv_load_gate(&final_state) || final_state.replay_untrusted || final_state.used_g[0] != 512) return 1;
     nvs_stats_t stats = {};
     if (!require(storage->fillStats(stats), "allocator stats")) return 1;
-    std::printf("PASS actual ESP-IDF v5.3 allocator: 512 changed snapshot pairs + 8 reopen cycles; "
+    std::printf("PASS actual ESP-IDF v5.3 allocator: 512 changed snapshots + 8 immediate all-blob reopen checks + final reopen; "
                 "4 x 4096 B; mirror %zu B, extension %zu B; used entries %zu, free entries %zu; "
                 "64 SDK scalars + 256 B PHY + schedule retained\n",
                 mirror_size, metadata_size, stats.used_entries, stats.free_entries);

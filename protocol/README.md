@@ -24,7 +24,9 @@ Shared definitions (timestamps, hopper names, doses) are in
 
 - Timestamps are RFC 3339 UTC strings, for example `2026-11-05T10:00:00Z`.
 - `at` in `ack`, `event` and online `state` is optional. The device sets it
-  whenever its clock is valid. A device without a synced clock omits it, for
+  whenever its clock is established from consistent SNTP replies. Initial
+  confirmation needs an additional poll (at least 15 s). A device without
+  established time omits it, for
   example in a `no_clock` ack, in a fault before the first SNTP sync, or in a
   `state` with `clock_valid: false`. The backend must not rely on `at`.
 - Command ids are UUIDs. Every command has `id`, `type`, `issued_at`, `expires_at`.
@@ -71,6 +73,12 @@ compiled-in limits so the result is never looser:
 - A `cue` command is rate-limited like a scatter: the device rejects it with
   `min_interval` when the last scatter or the last cue-only command is too close.
 - `pause` stops random scatters too, not only remote ones.
+- `busy` means the active replay cache cannot install a new id. The feeder pauses,
+  rejects without actuation, and does not consume that id. A later retry can be
+  re-evaluated after capacity is available; it still passes every current safety check.
+  This additive rejection reason extends the acknowledgement schema. Installed ids
+  remain protected and cannot execute twice. A negative capacity ack is not a promise
+  of an unbounded permanent tombstone for every delivery.
 - The device saves its gate state in NVS: daily counters, last scatter, replay
   ids, pause and faults. A reboot does not reset budgets or the replay check.
 
