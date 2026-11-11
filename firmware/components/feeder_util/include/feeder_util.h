@@ -33,6 +33,9 @@ size_t rfc3339_format(int64_t epoch, char *buf, size_t len);
 /* Strict "HH:MM" (24 h, 00:00..23:59). *minute = minutes since midnight. */
 bool hhmm_parse(const char *s, uint16_t *minute);
 
+/* Strict canonical UUID ("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", 36 chars, hex). */
+bool uuid_valid(const char *s);
+
 /* ---- random day planner ---- */
 
 #define SCHED_MAX_PER_DAY 24
@@ -63,6 +66,21 @@ size_t sched_plan_day(const sched_window_t *win, uint8_t n, uint16_t min_gap_min
 /* First planned minute strictly greater than now_minute. `minutes` ascending.
  * Returns false when none is left today. */
 bool sched_next_after(const uint16_t *minutes, size_t n, uint16_t now_minute, uint16_t *next);
+
+/* Local day on which the active or next schedule window starts. When a window
+ * crosses midnight (start_min > end_min) and local_minute < end_min, we are in
+ * the post-midnight tail of the window that started on local_day - 1. */
+int64_t sched_window_day(const sched_window_t *win, int64_t local_day, uint16_t local_minute);
+
+/* Filter an ascending `all[0..n-1]` from sched_plan_day() down to the slots
+ * strictly ahead of (local_day, local_minute) in the current window cycle,
+ * ordered chronologically. For a midnight-crossing window replanned before
+ * midnight (local_minute >= end_min), pre-midnight slots (> local_minute on
+ * local_day) come first, followed by post-midnight slots (< end_min on
+ * local_day + 1). `out_days` may be NULL. */
+size_t sched_filter_remaining(const sched_window_t *win, const uint16_t *all, size_t n,
+                              int64_t local_day, uint16_t local_minute, uint16_t *out_minutes,
+                              int64_t *out_days);
 
 #ifdef __cplusplus
 }

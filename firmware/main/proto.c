@@ -67,21 +67,7 @@ static const char *json_str(const cJSON *item)
 
 static bool valid_id(const char *s)
 {
-    if (s == NULL) {
-        return false;
-    }
-    const size_t n = strlen(s);
-    if (n < 1 || n > GATE_ID_MAX_LEN) {
-        return false;
-    }
-    for (size_t i = 0; i < n; i++) {
-        const char c = s[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' ||
-              c == '_')) {
-            return false;
-        }
-    }
-    return true;
+    return uuid_valid(s);
 }
 
 static bool parse_time(const cJSON *obj, const char *key, int64_t *out)
@@ -120,7 +106,7 @@ static bool parse_doses(const cJSON *arr, proto_cmd_t *out)
     return i > 0;
 }
 
-/* {"grain": 5, ...}: unknown hopper names are invalid. */
+/* {"grain": 5, ...}: unknown or duplicate hopper names are invalid. */
 static bool parse_hopper_map(const cJSON *obj, uint32_t dst[GATE_MAX_HOPPERS])
 {
     if (!cJSON_IsObject(obj)) {
@@ -131,7 +117,7 @@ static bool parse_hopper_map(const cJSON *obj, uint32_t dst[GATE_MAX_HOPPERS])
     {
         const int idx = feeder_hopper_index(it->string);
         int64_t v;
-        if (idx < 0 || !json_int(it, 0, MAX_GRAMS, &v)) {
+        if (idx < 0 || dst[idx] != GATE_UNSET || !json_int(it, 1, MAX_GRAMS, &v)) {
             return false;
         }
         dst[idx] = (uint32_t)v;
@@ -156,13 +142,13 @@ static bool parse_limits(const cJSON *lim, gate_runtime_limits_t *rt)
         return false;
     }
     if ((it = cJSON_GetObjectItemCaseSensitive(lim, "daily_total_g")) != NULL) {
-        if (!json_int(it, 0, MAX_GRAMS, &v)) {
+        if (!json_int(it, 1, MAX_GRAMS, &v)) {
             return false;
         }
         rt->daily_total_g = (uint32_t)v;
     }
     if ((it = cJSON_GetObjectItemCaseSensitive(lim, "min_interval_s")) != NULL) {
-        if (!json_int(it, 0, MAX_SECONDS, &v)) {
+        if (!json_int(it, 1, MAX_SECONDS, &v)) {
             return false;
         }
         rt->min_interval_s = (uint32_t)v;

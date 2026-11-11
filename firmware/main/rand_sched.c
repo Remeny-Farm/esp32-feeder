@@ -19,6 +19,7 @@ static const char *TAG = "sched";
 
 static sched_cfg_t s_cfg;
 static uint16_t s_minutes[SCHED_MAX_PER_DAY];
+static int64_t s_days[SCHED_MAX_PER_DAY];
 static size_t s_count;
 static size_t s_next;
 static int64_t s_plan_day;
@@ -83,14 +84,9 @@ static void replan(const gate_t *g, const gate_time_t *tm)
     uint16_t all[SCHED_MAX_PER_DAY];
     const size_t n = sched_plan_day(&win, s_cfg.scatters_per_day, (uint16_t)gap, quiet_cb, (void *)g,
                                     rng_cb, NULL, all);
-    s_count = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (all[i] > tm->local_minute) {
-            s_minutes[s_count++] = all[i];
-        }
-    }
+    s_count = sched_filter_remaining(&win, all, n, tm->local_day, tm->local_minute, s_minutes, s_days);
     s_next = 0;
-    s_plan_day = tm->local_day;
+    s_plan_day = sched_window_day(&win, tm->local_day, tm->local_minute);
     s_planned = true;
     s_replan = false;
     ESP_LOGI(TAG, "planned %u of %u scatters for the rest of the day (gap %" PRIu32 " min)",
@@ -106,16 +102,20 @@ bool rand_sched_poll(const gate_t *g, const gate_time_t *tm)
         s_planned = false; /* plan again once the clock is valid */
         return false;
     }
-    if (!s_planned || s_replan || tm->local_day != s_plan_day) {
+    const sched_window_t win = {s_cfg.window_start_min, s_cfg.window_end_min};
+    const int64_t win_day = sched_window_day(&win, tm->local_day, tm->local_minute);
+    if (!s_planned || s_replan || win_day != s_plan_day) {
         replan(g, tm);
     }
+    const int64_t now_abs = tm->local_day * GATE_MINUTES_PER_DAY + (int64_t)tm->local_minute;
     while (s_next < s_count) {
         const uint16_t m = s_minutes[s_next];
-        if (m > tm->local_minute) {
+        const int64_t slot_abs = s_days[s_next] * GATE_MINUTES_PER_DAY + (int64_t)m;
+        if (slot_abs > now_abs) {
             break; /* not yet */
         }
         s_next++;
-        if (tm->local_minute - m > LATE_MINUTES) {
+        if (now_abs - slot_abs > LATE_MINUTES) {
             ESP_LOGW(TAG, "skipped missed slot %02u:%02u", (unsigned)(m / 60), (unsigned)(m % 60));
             continue;
         }

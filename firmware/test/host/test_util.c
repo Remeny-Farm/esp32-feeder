@@ -300,6 +300,76 @@ static void test_next_after(void)
     CHECK(!sched_next_after(NULL, 3, 0, &next));
 }
 
+static void test_uuid_valid(void)
+{
+    CHECK(uuid_valid("5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69"));
+    CHECK(uuid_valid("5F0C9A52-7D1E-4B8E-9A43-1F2D3C4B5A69"));
+    CHECK(uuid_valid("00000000-0000-0000-0000-000000000000"));
+    CHECK(!uuid_valid(NULL));
+    CHECK(!uuid_valid(""));
+    CHECK(!uuid_valid("not-a-uuid"));
+    CHECK(!uuid_valid("5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a6"));   /* 35 chars */
+    CHECK(!uuid_valid("5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a690")); /* 37 chars */
+    CHECK(!uuid_valid("5f0c9a52_7d1e-4b8e-9a43-1f2d3c4b5a69"));  /* underscore */
+    CHECK(!uuid_valid("5f0c9a52-7d1e-4b8e-9a431-f2d3c4b5a69"));  /* shifted hyphen */
+    CHECK(!uuid_valid("5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a6g"));  /* non-hex 'g' */
+}
+
+static void test_filter_remaining_midnight_window(void)
+{
+    const sched_window_t day_win = {480, 1080};  /* 08:00-18:00 */
+    const sched_window_t night_win = {1320, 360}; /* 22:00-06:00 */
+    const uint16_t day_all[] = {500, 720, 960};
+    const uint16_t night_all[] = {0, 75, 270, 1330, 1400}; /* 00:00, 01:15, 04:30, 22:10, 23:20 */
+    uint16_t mins[SCHED_MAX_PER_DAY];
+    int64_t days[SCHED_MAX_PER_DAY];
+
+    /* Same-day window at 12:00 (720) on day 10: keeps only 960 on day 10. */
+    CHECK_EQ(sched_window_day(&day_win, 10, 720), 10);
+    CHECK_EQ(sched_filter_remaining(&day_win, day_all, 3, 10, 720, mins, days), 1);
+    CHECK_EQ(mins[0], 960);
+    CHECK_EQ(days[0], 10);
+
+    /* Midnight-crossing window replanned in the evening at 22:30 (1350) on day 10:
+     * keeps 23:20 on day 10 first, then 00:00, 01:15, 04:30 on day 11. */
+    CHECK_EQ(sched_window_day(&night_win, 10, 1350), 10);
+    CHECK_EQ(sched_filter_remaining(&night_win, night_all, 5, 10, 1350, mins, days), 4);
+    CHECK_EQ(mins[0], 1400);
+    CHECK_EQ(days[0], 10);
+    CHECK_EQ(mins[1], 0);
+    CHECK_EQ(days[1], 11);
+    CHECK_EQ(mins[2], 75);
+    CHECK_EQ(days[2], 11);
+    CHECK_EQ(mins[3], 270);
+    CHECK_EQ(days[3], 11);
+
+    /* Replanned after midnight at 01:00 (60) on day 11: still in day 10's window;
+     * pre-midnight slots are in the past, only 01:15 and 04:30 on day 11 remain. */
+    CHECK_EQ(sched_window_day(&night_win, 11, 60), 10);
+    CHECK_EQ(sched_filter_remaining(&night_win, night_all, 5, 11, 60, mins, days), 2);
+    CHECK_EQ(mins[0], 75);
+    CHECK_EQ(days[0], 11);
+    CHECK_EQ(mins[1], 270);
+    CHECK_EQ(days[1], 11);
+
+    /* At 06:00 (360) on day 11 the overnight window ended: advances to day 11's window. */
+    CHECK_EQ(sched_window_day(&night_win, 11, 360), 11);
+    CHECK_EQ(sched_filter_remaining(&night_win, night_all, 5, 11, 360, mins, NULL), 5);
+    CHECK_EQ(mins[0], 1330);
+    CHECK_EQ(mins[1], 1400);
+    CHECK_EQ(mins[2], 0);
+    CHECK_EQ(mins[3], 75);
+    CHECK_EQ(mins[4], 270);
+
+    /* Edge cases. */
+    const sched_window_t same = {480, 480};
+    CHECK_EQ(sched_filter_remaining(NULL, night_all, 5, 10, 0, mins, days), 0);
+    CHECK_EQ(sched_filter_remaining(&night_win, NULL, 5, 10, 0, mins, days), 0);
+    CHECK_EQ(sched_filter_remaining(&night_win, night_all, 0, 10, 0, mins, days), 0);
+    CHECK_EQ(sched_filter_remaining(&night_win, night_all, 5, 10, 1440, mins, days), 0);
+    CHECK_EQ(sched_filter_remaining(&same, night_all, 5, 10, 0, mins, days), 0);
+}
+
 int main(void)
 {
     RUN_TEST(test_rfc3339_parse_ok);
@@ -315,5 +385,7 @@ int main(void)
     RUN_TEST(test_plan_too_many_places_fewer);
     RUN_TEST(test_plan_edge_cases);
     RUN_TEST(test_next_after);
+    RUN_TEST(test_uuid_valid);
+    RUN_TEST(test_filter_remaining_midnight_window);
     return mt_summary();
 }

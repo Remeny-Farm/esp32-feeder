@@ -71,3 +71,68 @@ bool sched_next_after(const uint16_t *minutes, size_t n, uint16_t now_minute, ui
     }
     return false;
 }
+
+int64_t sched_window_day(const sched_window_t *win, int64_t local_day, uint16_t local_minute)
+{
+    if (win != NULL && win->start_min > win->end_min && local_minute < win->end_min) {
+        return local_day - 1;
+    }
+    return local_day;
+}
+
+size_t sched_filter_remaining(const sched_window_t *win, const uint16_t *all, size_t n,
+                              int64_t local_day, uint16_t local_minute, uint16_t *out_minutes,
+                              int64_t *out_days)
+{
+    if (win == NULL || all == NULL || out_minutes == NULL || n == 0 ||
+        win->start_min >= MINUTES_PER_DAY || win->end_min >= MINUTES_PER_DAY ||
+        win->start_min == win->end_min || local_minute >= MINUTES_PER_DAY) {
+        return 0;
+    }
+    size_t count = 0;
+    if (win->start_min < win->end_min) {
+        for (size_t i = 0; i < n; i++) {
+            if (all[i] >= win->start_min && all[i] < win->end_min && all[i] > local_minute) {
+                out_minutes[count] = all[i];
+                if (out_days != NULL) {
+                    out_days[count] = local_day;
+                }
+                count++;
+            }
+        }
+        return count;
+    }
+    /* Window crosses midnight: [start_min, 1440) on start day, then [0, end_min) on start day + 1. */
+    if (local_minute >= win->end_min) {
+        for (size_t i = 0; i < n; i++) {
+            if (all[i] >= win->start_min && all[i] > local_minute) {
+                out_minutes[count] = all[i];
+                if (out_days != NULL) {
+                    out_days[count] = local_day;
+                }
+                count++;
+            }
+        }
+        for (size_t i = 0; i < n; i++) {
+            if (all[i] < win->end_min) {
+                out_minutes[count] = all[i];
+                if (out_days != NULL) {
+                    out_days[count] = local_day + 1;
+                }
+                count++;
+            }
+        }
+    } else {
+        /* Already in the post-midnight tail [0, end_min): pre-midnight slots are in the past. */
+        for (size_t i = 0; i < n; i++) {
+            if (all[i] < win->end_min && all[i] > local_minute) {
+                out_minutes[count] = all[i];
+                if (out_days != NULL) {
+                    out_days[count] = local_day;
+                }
+                count++;
+            }
+        }
+    }
+    return count;
+}

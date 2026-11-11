@@ -176,3 +176,26 @@ bool hhmm_parse(const char *s, uint16_t *minute)
     *minute = (uint16_t)(h * 60 + m);
     return true;
 }
+
+static bool is_hex(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+bool uuid_valid(const char *s)
+{
+    if (s == NULL) {
+        return false;
+    }
+    for (int i = 0; i < 36; i++) {
+        const char c = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') {
+                return false;
+            }
+        } else if (!is_hex(c)) {
+            return false;
+        }
+    }
+    return s[36] == '\0';
+}
