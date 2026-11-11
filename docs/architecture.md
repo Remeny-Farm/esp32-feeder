@@ -71,7 +71,9 @@ Open decisions are listed at the end.
 - NVS keeps a v1-compatible `gate` snapshot for bootloader rollback and a full
   `gate_v2` extension containing safety metadata and the legacy quarantine.
   Active ids are reconstructed from the v1 snapshot, avoiding a second copy of
-  that large ring on the default 16 KiB NVS partition. A pairing checksum detects
+  that large ring on the default 16 KiB NVS partition. Legacy ids use lossless
+  7-bit printable-ASCII packing on disk, preserving the complete gate ID contract
+  while leaving room for the default PHY calibration data. A pairing checksum detects
   interrupted snapshot pairs. Save succeeds only after both writes and their commit.
   Interrupted/mismatched snapshot pairs preserve known budgets and faults and
   disable admission instead of starting empty. A service-button fault clear

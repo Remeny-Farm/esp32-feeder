@@ -71,7 +71,9 @@ typedef struct {
     int64_t seen_expires_at;
     int64_t clock_high_water;
     uint64_t mirror_hash;
-    char legacy_ids[GATE_LEGACY_IDS][GATE_ID_BUF];
+    /* 36 printable ASCII symbols at 7 bits each fit in 32 bytes. Code zero
+     * terminates shorter ids; the original 37-byte RAM representation stays. */
+    unsigned char legacy_ids[GATE_LEGACY_IDS][32];
     uint16_t legacy_count;
     uint16_t active_count;
     uint16_t active_head;
@@ -79,6 +81,9 @@ typedef struct {
 } gate_metadata_t;
 
 #define GATE_METADATA_FORMAT 1u
+#if GATE_ID_MAX_LEN != 36
+#error "packed legacy-id format requires the existing 36-character gate contract"
+#endif
 static gate_metadata_t s_metadata;
 
 /* Pairing checksum for interrupted writes, not an authentication mechanism. */
@@ -90,6 +95,46 @@ static uint64_t snapshot_hash(const void *data, size_t len)
         hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
     }
     return hash;
+}
+
+/* Lossless representation of the gate's existing printable-ASCII contract.
+ * No UUID restriction: every 0x21..0x7e character remains representable. */
+static bool pack_legacy(const gate_state_t *st)
+{
+    for (uint16_t i = 0; i < st->legacy_count; i++) {
+        bool ended = false;
+        if (st->legacy_ids[i][0] == '\0' || st->legacy_ids[i][GATE_ID_MAX_LEN] != '\0') return false;
+        for (size_t j = 0; j < GATE_ID_MAX_LEN; j++) {
+            unsigned char c = ended ? 0 : (unsigned char)st->legacy_ids[i][j];
+            if (c == 0) ended = true;
+            else if (c < 0x21 || c > 0x7e) return false;
+            const unsigned value = c ? c - 0x20u : 0;
+            const size_t bit = j * 7;
+            s_metadata.legacy_ids[i][bit / 8] |= (unsigned char)(value << (bit % 8));
+            if (bit % 8 > 1) s_metadata.legacy_ids[i][bit / 8 + 1] |= (unsigned char)(value >> (8 - bit % 8));
+        }
+    }
+    return true;
+}
+
+static bool unpack_legacy(gate_state_t *st)
+{
+    for (uint16_t i = 0; i < st->legacy_count; i++) {
+        bool ended = false;
+        if (s_metadata.legacy_ids[i][31] & 0xf0u) return false;
+        for (size_t j = 0; j < GATE_ID_MAX_LEN; j++) {
+            const size_t bit = j * 7;
+            unsigned value = s_metadata.legacy_ids[i][bit / 8] >> (bit % 8);
+            if (bit % 8 > 1) value |= (unsigned)s_metadata.legacy_ids[i][bit / 8 + 1] << (8 - bit % 8);
+            value &= 0x7fu;
+            if (value > 94 || (ended && value)) return false;
+            if (!value) ended = true;
+            st->legacy_ids[i][j] = value ? (char)(value + 0x20u) : '\0';
+        }
+        st->legacy_ids[i][GATE_ID_MAX_LEN] = '\0';
+        if (st->legacy_ids[i][0] == '\0') return false;
+    }
+    return true;
 }
 
 /* Keep the last active ids plus as many old quarantined ids as fit in v1's
@@ -147,7 +192,7 @@ bool nv_load_gate(gate_state_t *out)
         out->seen_count = s_metadata.active_count;
         out->seen_head = s_metadata.active_head;
         out->replay_untrusted = s_metadata.replay_untrusted;
-        memcpy(out->legacy_ids, s_metadata.legacy_ids, sizeof out->legacy_ids);
+        if (!unpack_legacy(out)) goto corrupt;
         const bool ids_ok = v1_ok && s_legacy.seen_count <= GATE_SEEN_IDS &&
                             s_legacy.seen_count >= out->seen_count;
         if (ids_ok) {
@@ -213,7 +258,10 @@ esp_err_t nv_save_gate(const gate_state_t *st)
     s_metadata.seen_expires_at = st->seen_expires_at;
     s_metadata.clock_high_water = st->clock_high_water;
     s_metadata.mirror_hash = snapshot_hash(s_v1_blob, sizeof s_v1_blob);
-    memcpy(s_metadata.legacy_ids, st->legacy_ids, sizeof s_metadata.legacy_ids);
+    if (!pack_legacy(st)) {
+        nvs_close(h);
+        return ESP_ERR_INVALID_ARG;
+    }
     s_metadata.legacy_count = st->legacy_count;
     s_metadata.active_count = st->seen_count;
     s_metadata.active_head = st->seen_head;

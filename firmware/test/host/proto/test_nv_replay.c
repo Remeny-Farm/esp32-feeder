@@ -171,11 +171,35 @@ static void test_export_rollback_snapshot(void)
     }
 }
 
+static void test_full_length_printable_legacy_ids_roundtrip(void)
+{
+#ifdef GATE_LEGACY_IDS
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    gate_runtime_limits_clear(&state.runtime);
+    state.legacy_count = GATE_LEGACY_IDS;
+    for (uint16_t i = 0; i < GATE_LEGACY_IDS; i++) {
+        for (size_t j = 0; j < GATE_ID_MAX_LEN; j++) {
+            state.legacy_ids[i][j] = (char)(0x21 + (i * 36 + j) % 94);
+        }
+        state.legacy_ids[i][0] = (char)(0x21 + i); /* unique ids, full printable range */
+        state.legacy_ids[i][GATE_ID_MAX_LEN] = '\0';
+    }
+    strcpy(state.legacy_ids[0], "!"); /* shortest id and maximum-length ids */
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    CHECK(nv_load_gate(&loaded));
+    CHECK(!loaded.replay_untrusted);
+    for (uint16_t i = 0; i < GATE_LEGACY_IDS; i++) CHECK_STR(state.legacy_ids[i], loaded.legacy_ids[i]);
+#endif
+}
+
 int main(void)
 {
     RUN_TEST(test_legacy_load_preserves_state_and_ids);
     RUN_TEST(test_v2_roundtrip_retains_expiry_and_wall_floor);
     RUN_TEST(test_partial_save_disables_admission_and_preserves_budgets);
+    RUN_TEST(test_full_length_printable_legacy_ids_roundtrip);
     RUN_TEST(test_export_rollback_snapshot);
     return mt_summary();
 }
