@@ -50,8 +50,14 @@ Open decisions are listed at the end.
 - Every command carries a unique `id` and an `expires_at`. The device rejects
   expired commands and command ids it has already seen (replay protection).
 - The device rejects a command whose lifetime (`expires_at - issued_at`) is
-  longer than 300 s, as `expired`. This keeps every valid command inside the
-  replay window.
+  longer than 300 s, as `expired`. Replay ids are retained until there have
+  been 600 seconds without a remote attempt (300 s lifetime + 300 s allowed
+  clock skew). At 64 distinct ids, new ids fail closed as `invalid` and pause
+  the feeder; live ids are never overwritten. Rejections also extend retention.
+  This is an overload safety stop, including a sustained command stream that
+  fills the cache without a 10-minute quiet gap. After that gap a fresh command
+  is accepted; the feeder stays paused until an explicit resume. A restored
+  cache starts its conservative retention window at the first valid clock.
 - The MQTT client id equals the device id, which equals the certificate CN.
   The broker forces the client id to the certificate CN, so a device cannot
   connect under another id (see `server/README.md`).

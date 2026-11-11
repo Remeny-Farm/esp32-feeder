@@ -316,16 +316,17 @@ static void test_duplicate_ring_keeps_last_32_ids(void)
         m = meta(id, NOON(1));
         CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
     }
-    /* The ring evicts oldest first once it is full. */
+    /* Capacity never evicts live ids, including ids from rejected commands. */
     for (int i = 40; i < 40 + GATE_SEEN_IDS; i++) {
         gate_cmd_meta_t m;
         snprintf(id, sizeof id, "ring-%03d", i);
         m = meta(id, NOON(1));
-        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK);
+        CHECK_EQ(gate_check_command(&g, &t, &m), i < GATE_SEEN_IDS ? GATE_OK : GATE_INVALID);
     }
     {
         gate_cmd_meta_t m = meta("ring-000", NOON(1));
-        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK); /* forgotten: documented limit */
+        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
+        CHECK(gate_paused(&g));
     }
 }
 

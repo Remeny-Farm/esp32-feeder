@@ -24,12 +24,12 @@
  *   2. expired    R   now > expires_at, or issued_at > now + 5 min, or
  *                     expires_at < issued_at, or the lifetime
  *                     expires_at - issued_at > FEEDER_CMD_MAX_TTL_S. The TTL
- *                     cap keeps every valid command younger than the replay
- *                     ring remembers it.
- *   3. duplicate  R   id is in the ring of the last GATE_SEEN_IDS ids.
- *                     The id is recorded on EVERY remote evaluation, also
- *                     when the command is rejected at any step (including
- *                     steps 1 and 2), so a replay is never accepted.
+ *                     cap bounds replay retention together with clock skew.
+ *   3. duplicate  R   id is in the cache of GATE_SEEN_IDS ids. The cache is
+ *                     cleared only after TTL + clock-skew seconds without
+ *                     a remote attempt. Full cache: fail closed (`invalid`)
+ *                     and pause; never evict a live id. Rejected attempts also
+ *                     extend retention, including attempts without a clock.
  *   4. invalid        scatter only: dose list malformed (1..hopper_count
  *                     doses, unique hopper index < hopper_count, grams >= 1)
  *   5. paused         BOTH paths: a paused feeder neither cues nor scatters,
@@ -87,9 +87,9 @@ extern "C" {
 /* issued_at may be at most this far in the future (clock skew allowance). */
 #define GATE_MAX_FUTURE_S (5 * 60)
 /* Longest accepted lifetime of a remote command (expires_at - issued_at).
- * The replay ring of GATE_SEEN_IDS ids must outlive any valid command, so a
- * longer lifetime is rejected as `expired`. The app may override the value
- * with a compiler definition. */
+ * The replay cache retains ids for this lifetime plus clock skew after the
+ * last remote attempt. A longer lifetime is rejected as `expired`. The app
+ * may override the value with a compiler definition. */
 #ifndef FEEDER_CMD_MAX_TTL_S
 #define FEEDER_CMD_MAX_TTL_S 300
 #endif
@@ -210,6 +210,7 @@ typedef struct {
     gate_level_t level[GATE_MAX_HOPPERS];        /* not persisted */
     bool dirty;
     bool ready;                                  /* gate_init() succeeded */
+    int64_t seen_until;                           /* replay retention; 0 = anchor at next valid clock */
     /* In-flight reservation (gate_reserve_scatter), NOT persisted: after a
      * reset the reserved grams simply stay counted in st.used_g. */
     bool reserved;
@@ -232,7 +233,7 @@ bool gate_take_dirty(gate_t *g);
 /* ---- remote control: steps 1-3 only ---- */
 gate_result_t gate_check_command(gate_t *g, const gate_time_t *tm, const gate_cmd_meta_t *meta);
 /* Record an id of a command that failed to parse after its id was read, so a
- * replay is `duplicate`. Returns false when the id itself is unusable. */
+ * replay is `duplicate`. False if id unusable or cache full (then pauses). */
 bool gate_note_id(gate_t *g, const char *id);
 
 void gate_set_paused(gate_t *g, bool paused);

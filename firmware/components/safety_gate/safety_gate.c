@@ -71,8 +71,14 @@ static bool seen_contains(const gate_t *g, const char *id)
     return false;
 }
 
-static void seen_record(gate_t *g, const char *id)
+static bool seen_record(gate_t *g, const char *id)
 {
+    if (g->st.seen_count == GATE_SEEN_IDS) {
+        /* Never forget a live command to make room. Stop safely even when
+         * the operator's next pause cannot be recorded. */
+        gate_set_paused(g, true);
+        return false;
+    }
     char *slot = g->st.seen_ids[g->st.seen_head];
     size_t n = strlen(id); /* id_ok() already bounded it */
     memcpy(slot, id, n);
@@ -82,6 +88,28 @@ static void seen_record(gate_t *g, const char *id)
         g->st.seen_count++;
     }
     g->dirty = true;
+    return true;
+}
+
+/* Forget the cache only after a whole possible command lifetime of silence.
+ * Includes future-issued commands and attempts rejected while the cache is full.
+ * A restored cache / parse failure has no trusted receive time: anchor it now. */
+static void seen_touch(gate_t *g, const gate_time_t *tm)
+{
+    if (!clock_ok(tm)) {
+        g->seen_until = 0;
+        return;
+    }
+    if (g->seen_until != 0 && tm->now > g->seen_until) {
+        g->st.seen_count = 0;
+        g->st.seen_head = 0;
+        g->dirty = true;
+    }
+    const int64_t horizon = GATE_MAX_FUTURE_S + FEEDER_CMD_MAX_TTL_S;
+    const int64_t until = tm->now > INT64_MAX - horizon ? INT64_MAX : tm->now + horizon;
+    if (g->seen_until == 0 || until > g->seen_until) {
+        g->seen_until = until;
+    }
 }
 
 /* ---- effective limits ---- */
@@ -289,6 +317,7 @@ bool gate_restore(gate_t *g, const gate_state_t *saved)
         st.seen_ids[i][GATE_ID_BUF - 1] = '\0';
     }
     g->st = st;
+    g->seen_until = 0; /* conservative retention restarts at the first valid clock */
     g->reserved = false; /* a reservation does not survive a restore: its grams stay counted */
     memset(g->reserved_g, 0, sizeof g->reserved_g);
     g->dirty = false;
@@ -347,6 +376,9 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     if (src == GATE_SRC_REMOTE && (meta == NULL || !id_ok(meta->id))) {
         return GATE_INVALID;
     }
+    if (src == GATE_SRC_REMOTE) {
+        seen_touch(g, tm);
+    }
     if (!clock_ok(tm)) {
         /* Remote: fail closed. Random: quiet hours are unknowable before the
          * first sync, so the random scheduler must not scatter either. */
@@ -360,9 +392,7 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     }
     /* Record the id on every remote evaluation, whatever the outcome. */
     bool seen = seen_contains(g, meta->id);
-    if (!seen) {
-        seen_record(g, meta->id);
-    }
+    const bool recorded = seen || seen_record(g, meta->id);
     if (tm->now > meta->expires_at || meta->issued_at > tm->now + GATE_MAX_FUTURE_S ||
         meta->expires_at < meta->issued_at ||
         /* expires_at >= issued_at here: the unsigned difference cannot overflow */
@@ -372,7 +402,7 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     if (seen) {
         return GATE_DUPLICATE;
     }
-    return GATE_OK;
+    return recorded ? GATE_OK : GATE_INVALID;
 }
 
 /* Dose list structure: step 4. */
@@ -429,10 +459,8 @@ bool gate_note_id(gate_t *g, const char *id)
     if (!g->ready || !id_ok(id)) {
         return false;
     }
-    if (!seen_contains(g, id)) {
-        seen_record(g, id);
-    }
-    return true;
+    seen_touch(g, NULL); /* parse failures have no trusted timestamp */
+    return seen_contains(g, id) || seen_record(g, id);
 }
 
 gate_result_t gate_check_cue(gate_t *g, const gate_time_t *tm, gate_source_t src, const gate_cmd_meta_t *meta)
