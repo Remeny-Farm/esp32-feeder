@@ -39,6 +39,9 @@ static void fclock_get(gate_time_t *t)
 {
     *t = (gate_time_t){.now = INT64_C(1793872800), .clock_valid = true,
                        .local_minute = 600, .local_day = 4};
+#if GATE_STATE_VERSION >= 2
+    t->monotonic_s = 10000;
+#endif
 }
 static const char *now_str(char *buf, size_t len)
 {

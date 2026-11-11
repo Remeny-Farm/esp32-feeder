@@ -49,6 +49,9 @@ static gate_time_t at(int64_t now)
 {
     gate_time_t t;
     t.now = now;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s = (uint64_t)now;
+#endif
     t.clock_valid = true;
     t.local_day = (now - EPOCH0) / 86400;
     t.local_minute = (uint16_t)(((now - EPOCH0) % 86400) / 60);
@@ -743,7 +746,7 @@ static void test_clock_step_back_then_forward_does_not_reset_twice(void)
     /* clock steps back one day: rejected (the clamped last scatter waits an interval,
      * the counters are kept either way) */
     CHECK(rs(&g, d99 + 3 * INTERVAL, "cb-1", 0, 1) != GATE_OK);
-    REASON(rs(&g, d99 + 4 * INTERVAL, "cb-1b", 0, 1), "daily_budget_exceeded");
+    REASON(rs(&g, d99 + 4 * INTERVAL, "cb-1b", 0, 1), "no_clock");
     CHECK_EQ(used(&g, d99, 0), 30);
     CHECK_EQ(gate_state(&g)->day, 100); /* st.day stays at the highest day seen */
 

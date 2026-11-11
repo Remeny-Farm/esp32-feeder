@@ -26,8 +26,9 @@
  *                     expires_at - issued_at > FEEDER_CMD_MAX_TTL_S. The TTL
  *                     cap bounds replay retention together with clock skew.
  *   3. duplicate  R   id is in the cache of GATE_SEEN_IDS ids. The cache is
- *                     cleared only after TTL + clock-skew seconds without
- *                     a remote attempt. Full cache: fail closed (`invalid`)
+ *                     cleared only after monotonic TTL + clock-skew silence
+ *                     AND every recorded expiry. Wall-clock rollback fails
+ *                     closed as no_clock, including after reboot. Full cache: fail closed (`invalid`)
  *                     and pause; never evict a live id. Rejected attempts also
  *                     extend retention, including attempts without a clock.
  *   4. invalid        scatter only: dose list malformed (1..hopper_count
@@ -164,6 +165,7 @@ void gate_runtime_limits_clear(gate_runtime_limits_t *rt);
 /* ---- time, passed in by the caller (the gate never reads a clock) ---- */
 typedef struct {
     int64_t now;            /* UTC epoch seconds */
+    uint64_t monotonic_s;   /* elapsed seconds since boot; never wall-clock time */
     bool clock_valid;       /* SNTP synced at least once since boot */
     uint16_t local_minute;  /* local minutes since midnight, 0..1439 */
     int64_t local_day;      /* local calendar day number; +1 per local midnight */
@@ -183,7 +185,7 @@ typedef struct {
 
 /* ---- persisted state (save it to NVS when gate_take_dirty() is true) ---- */
 #define GATE_STATE_MAGIC 0x47415445u /* "GATE" */
-#define GATE_STATE_VERSION 1u
+#define GATE_STATE_VERSION 2u
 
 typedef struct {
     uint32_t magic;
@@ -202,7 +204,12 @@ typedef struct {
     char seen_ids[GATE_SEEN_IDS][GATE_ID_BUF];
     uint16_t seen_head;                          /* next slot to overwrite */
     uint16_t seen_count;
+    int64_t seen_expires_at;                     /* latest expiry, including rejected/overflow ids */
+    int64_t clock_high_water;                    /* rollback cannot revive expired payloads */
 } gate_state_t;
+
+/* v1 is the unchanged prefix; legacy expiry metadata is unknowable. */
+#define GATE_STATE_V1_SIZE offsetof(gate_state_t, seen_expires_at)
 
 typedef struct {
     gate_limits_t limits;                        /* compiled-in */
@@ -210,7 +217,8 @@ typedef struct {
     gate_level_t level[GATE_MAX_HOPPERS];        /* not persisted */
     bool dirty;
     bool ready;                                  /* gate_init() succeeded */
-    int64_t seen_until;                           /* replay retention; 0 = anchor at next valid clock */
+    uint64_t seen_last_mono;                      /* last remote attempt, elapsed seconds */
+    bool seen_timer_started;                     /* restart conservative quiet interval after restore */
     /* In-flight reservation (gate_reserve_scatter), NOT persisted: after a
      * reset the reserved grams simply stay counted in st.used_g. */
     bool reserved;

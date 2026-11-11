@@ -6,6 +6,7 @@
 
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "esp_timer.h"
 #include "feeder_util.h"
 #include "sdkconfig.h"
 
@@ -55,6 +56,7 @@ void fclock_get(gate_time_t *tm)
     struct tm lt;
     localtime_r(&now, &lt);
     tm->now = (int64_t)now;
+    tm->monotonic_s = (uint64_t)esp_timer_get_time() / 1000000u;
     tm->clock_valid = s_synced && tm->now >= GATE_MIN_VALID_EPOCH;
     tm->local_minute = (uint16_t)(lt.tm_hour * 60 + lt.tm_min);
     /* Days of the local calendar date. Not (now + tm_gmtoff) / 86400: newlib

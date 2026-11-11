@@ -50,14 +50,26 @@ Open decisions are listed at the end.
 - Every command carries a unique `id` and an `expires_at`. The device rejects
   expired commands and command ids it has already seen (replay protection).
 - The device rejects a command whose lifetime (`expires_at - issued_at`) is
-  longer than 300 s, as `expired`. Replay ids are retained until there have
-  been 600 seconds without a remote attempt (300 s lifetime + 300 s allowed
-  clock skew). At 64 distinct ids, new ids fail closed as `invalid` and pause
-  the feeder; live ids are never overwritten. Rejections also extend retention.
-  This is an overload safety stop, including a sustained command stream that
-  fills the cache without a 10-minute quiet gap. After that gap a fresh command
-  is accepted; the feeder stays paused until an explicit resume. A restored
-  cache starts its conservative retention window at the first valid clock.
+  longer than 300 s, as `expired`. Replay ids are retained until both their
+  latest recorded `expires_at` and 600 seconds of monotonic time without a
+  remote attempt have passed (300 s lifetime + 300 s allowed clock skew).
+  This also covers future-issued rejected commands and overflow attempts.
+  At 64 distinct ids, new ids fail closed as `invalid` and pause the feeder;
+  live ids are never overwritten. Rejections also extend retention. A sustained
+  command stream without a 10-minute quiet gap can therefore stop the feeder.
+  After the gap and all recorded expiries, a fresh command is accepted; the
+  feeder stays paused until an explicit resume.
+- Gate state version 2 persists the latest recorded expiry and highest trusted
+  wall-clock value. Remote and random commands fail closed as `no_clock` while
+  wall time is below that value, even after reboot. A forward clock correction
+  therefore blocks commands after a rollback until wall time catches up. The
+  monotonic quiet interval restarts conservatively after reboot.
+- Upgrading a version 1 gate blob preserves pause, budgets, faults and every
+  cached id. Version 1 did not record expiries, so those ids cannot safely expire
+  automatically. An upgrade with a nonempty legacy cache retains it indefinitely;
+  reaching 64 ids causes the same safety pause. Local maintenance must inspect
+  and reprovision legacy state before normal cache recycling can resume. The
+  firmware never clears legacy pause or budgets as an upgrade shortcut.
 - The MQTT client id equals the device id, which equals the certificate CN.
   The broker forces the client id to the certificate CN, so a device cannot
   connect under another id (see `server/README.md`).

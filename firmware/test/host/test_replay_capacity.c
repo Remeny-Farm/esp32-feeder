@@ -8,6 +8,9 @@
 static gate_time_t clock_at(int64_t now)
 {
     gate_time_t t = {.now = now, .clock_valid = true, .local_minute = 720, .local_day = 1};
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s = (uint64_t)now;
+#endif
     return t;
 }
 
@@ -65,10 +68,19 @@ static void test_overflow_extends_quiet_recovery(void)
     fill(&g, &t);
     CHECK_EQ(command(&g, &t, "overflow"), GATE_INVALID);
     t.now += RETAIN;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s += RETAIN;
+#endif
     CHECK_EQ(command(&g, &t, "overflow"), GATE_INVALID); /* inclusive deadline */
     t.now += RETAIN;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s += RETAIN;
+#endif
     CHECK_EQ(command(&g, &t, "other-overflow"), GATE_INVALID);
     t.now += RETAIN + 1;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s += RETAIN + 1;
+#endif
     CHECK_EQ(command(&g, &t, "fresh-after-silence"), GATE_OK);
     CHECK_EQ(g.st.seen_count, 1);
     CHECK(gate_paused(&g)); /* recovery never resumes automatically */
@@ -86,15 +98,83 @@ static void test_restore_and_clockless_rejections_keep_ids(void)
     t.clock_valid = false;
     CHECK_EQ(command(&restored, &t, "no-clock-overflow"), GATE_NO_CLOCK);
     CHECK(gate_paused(&restored));
-    CHECK(!gate_note_id(&restored, "parse-overflow"));
     t.clock_valid = true;
     CHECK_EQ(command(&restored, &t, "resume-A"), GATE_DUPLICATE);
     t.now += RETAIN + 1;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s += RETAIN + 1;
+#endif
     CHECK_EQ(command(&restored, &t, "after-recovery"), GATE_OK);
+}
+
+static void test_future_rejected_payload_stays_consumed_after_restore(void)
+{
+    gate_t g, restored;
+    setup(&g);
+    gate_time_t t = clock_at(NOW);
+    gate_cmd_meta_t a = {.id = "future-resume", .issued_at = NOW + 1000, .expires_at = NOW + 1300};
+    CHECK_EQ(gate_check_command(&g, &t, &a), GATE_EXPIRED);
+    t = clock_at(NOW + 1);
+    CHECK_EQ(command(&g, &t, "pause-B"), GATE_OK);
+    gate_set_paused(&g, true);
+    setup(&restored);
+    CHECK(gate_restore(&restored, gate_state(&g)));
+    /* Start a conservative monotonic interval after restore, then wait it out. */
+    CHECK_EQ(gate_check_command(&restored, &t, &a), GATE_EXPIRED);
+    t = clock_at(NOW + 1000);
+    CHECK_EQ(gate_check_command(&restored, &t, &a), GATE_DUPLICATE);
+    CHECK(gate_paused(&restored));
+}
+
+static void test_forward_backward_wall_step_cannot_forget_resume(void)
+{
+    gate_t g;
+    setup(&g);
+    gate_time_t t = clock_at(NOW);
+    gate_cmd_meta_t a = {.id = "resume-A", .issued_at = NOW, .expires_at = NOW + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &a), GATE_OK);
+    t = clock_at(NOW + 1);
+    CHECK_EQ(command(&g, &t, "pause-B"), GATE_OK);
+    gate_set_paused(&g, true);
+    t.now = NOW + 1000; /* Only one actual elapsed second, no real quiet interval. */
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s++;
+#endif
+    CHECK_EQ(command(&g, &t, "unrelated"), GATE_OK);
+    CHECK_EQ(g.st.seen_count, 3);
+    t.now = NOW + 2;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s++;
+#endif
+    CHECK_EQ(gate_check_command(&g, &t, &a), GATE_NO_CLOCK);
+    CHECK(gate_paused(&g));
+}
+
+static void test_rollback_after_real_expiry_and_reboot_fails_closed(void)
+{
+    gate_t g, restored;
+    setup(&g);
+    gate_time_t t = clock_at(NOW);
+    gate_cmd_meta_t a = {.id = "resume-A", .issued_at = NOW, .expires_at = NOW + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &a), GATE_OK);
+    t = clock_at(NOW + 1);
+    CHECK_EQ(command(&g, &t, "pause-B"), GATE_OK);
+    gate_set_paused(&g, true);
+    t = clock_at(NOW + 1000); /* Real quiet interval and expiry both passed. */
+    CHECK_EQ(command(&g, &t, "fresh"), GATE_OK);
+    CHECK_EQ(g.st.seen_count, 1);
+    setup(&restored);
+    CHECK(gate_restore(&restored, gate_state(&g)));
+    t = clock_at(NOW + 2);
+    CHECK_EQ(gate_check_command(&restored, &t, &a), GATE_NO_CLOCK);
+    CHECK(gate_paused(&restored));
 }
 
 int main(void)
 {
+    RUN_TEST(test_future_rejected_payload_stays_consumed_after_restore);
+    RUN_TEST(test_forward_backward_wall_step_cannot_forget_resume);
+    RUN_TEST(test_rollback_after_real_expiry_and_reboot_fails_closed);
     RUN_TEST(test_pause_survives_replay_and_overflow);
     RUN_TEST(test_overflow_extends_quiet_recovery);
     RUN_TEST(test_restore_and_clockless_rejections_keep_ids);

@@ -91,25 +91,27 @@ static bool seen_record(gate_t *g, const char *id)
     return true;
 }
 
-/* Forget the cache only after a whole possible command lifetime of silence.
- * Includes future-issued commands and attempts rejected while the cache is full.
- * A restored cache / parse failure has no trusted receive time: anchor it now. */
+/* Wall time determines payload validity; elapsed time determines silence.
+ * Both must have passed before ids can be forgotten. Persist the wall floor
+ * and latest expiry so a reboot cannot revive an already consumed payload. */
 static void seen_touch(gate_t *g, const gate_time_t *tm)
 {
-    if (!clock_ok(tm)) {
-        g->seen_until = 0;
+    if (tm == NULL) {
+        g->seen_timer_started = false;
         return;
     }
-    if (g->seen_until != 0 && tm->now > g->seen_until) {
+    const uint64_t horizon = GATE_MAX_FUTURE_S + FEEDER_CMD_MAX_TTL_S;
+    if (clock_ok(tm) && tm->now >= g->st.clock_high_water &&
+        g->seen_timer_started && tm->monotonic_s >= g->seen_last_mono &&
+        tm->monotonic_s - g->seen_last_mono > horizon &&
+        tm->now > g->st.seen_expires_at) {
         g->st.seen_count = 0;
         g->st.seen_head = 0;
+        g->st.seen_expires_at = 0;
         g->dirty = true;
     }
-    const int64_t horizon = GATE_MAX_FUTURE_S + FEEDER_CMD_MAX_TTL_S;
-    const int64_t until = tm->now > INT64_MAX - horizon ? INT64_MAX : tm->now + horizon;
-    if (g->seen_until == 0 || until > g->seen_until) {
-        g->seen_until = until;
-    }
+    g->seen_last_mono = tm->monotonic_s;
+    g->seen_timer_started = true;
 }
 
 /* ---- effective limits ---- */
@@ -296,7 +298,8 @@ bool gate_restore(gate_t *g, const gate_state_t *saved)
         return false;
     }
     if (st.day < 0 || st.last_scatter_at < 0 || st.last_cue_at < 0 ||
-        st.seen_head >= GATE_SEEN_IDS || st.seen_count > GATE_SEEN_IDS) {
+        st.seen_head >= GATE_SEEN_IDS || st.seen_count > GATE_SEEN_IDS ||
+        st.seen_expires_at < 0 || st.clock_high_water < 0) {
         return false;
     }
     if ((st.fault_mask & ~(GATE_FAULT_STALL | GATE_FAULT_LID_OPEN | GATE_FAULT_MOTOR_CONTROLLER |
@@ -317,7 +320,7 @@ bool gate_restore(gate_t *g, const gate_state_t *saved)
         st.seen_ids[i][GATE_ID_BUF - 1] = '\0';
     }
     g->st = st;
-    g->seen_until = 0; /* conservative retention restarts at the first valid clock */
+    g->seen_timer_started = false; /* restart elapsed quiet interval after reboot */
     g->reserved = false; /* a reservation does not survive a restore: its grams stay counted */
     memset(g->reserved_g, 0, sizeof g->reserved_g);
     g->dirty = false;
@@ -379,13 +382,21 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     if (src == GATE_SRC_REMOTE) {
         seen_touch(g, tm);
     }
-    if (!clock_ok(tm)) {
+    if (src == GATE_SRC_REMOTE && meta->expires_at > g->st.seen_expires_at) {
+        g->st.seen_expires_at = meta->expires_at;
+        g->dirty = true;
+    }
+    if (!clock_ok(tm) || tm->now < g->st.clock_high_water) {
         /* Remote: fail closed. Random: quiet hours are unknowable before the
          * first sync, so the random scheduler must not scatter either. */
         if (src == GATE_SRC_REMOTE && !seen_contains(g, meta->id)) {
             seen_record(g, meta->id); /* a replay after the clock arrives is `duplicate` */
         }
         return GATE_NO_CLOCK;
+    }
+    if (tm->now > g->st.clock_high_water) {
+        g->st.clock_high_water = tm->now;
+        g->dirty = true;
     }
     if (src == GATE_SRC_RANDOM) {
         return GATE_OK;
@@ -459,7 +470,9 @@ bool gate_note_id(gate_t *g, const char *id)
     if (!g->ready || !id_ok(id)) {
         return false;
     }
-    seen_touch(g, NULL); /* parse failures have no trusted timestamp */
+    seen_touch(g, NULL); /* no expiry available: keep this cache conservatively */
+    g->st.seen_expires_at = INT64_MAX;
+    g->dirty = true;
     return seen_contains(g, id) || seen_record(g, id);
 }
 

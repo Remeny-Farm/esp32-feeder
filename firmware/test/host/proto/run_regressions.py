@@ -52,9 +52,22 @@ def main():
         result = subprocess.run([str(binary), *arguments], cwd=root)
         if result.returncode:
             failures.append(name)
+    # Minimal ESP/NVS declarations; compile the actual adapter, not a port.
+    stubs = args.build_dir / "sdk-stubs"
+    stubs.mkdir(exist_ok=True)
+    (stubs / "esp_err.h").write_text("#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_ERR_NVS_NOT_FOUND 1\n#define ESP_ERR_NVS_INVALID_LENGTH 2\n")
+    (stubs / "esp_log.h").write_text("#pragma once\n#define ESP_LOGW(tag, ...) ((void)(tag))\n")
+    (stubs / "nvs.h").write_text("#pragma once\n#include <stddef.h>\n#include \"esp_err.h\"\n"
+                               "typedef int nvs_handle_t;\n#define NVS_READONLY 0\n#define NVS_READWRITE 1\n"
+                               "esp_err_t nvs_open(const char *, int, nvs_handle_t *);\n"
+                               "void nvs_close(nvs_handle_t);\nesp_err_t nvs_get_blob(nvs_handle_t, const char *, void *, size_t *);\n"
+                               "esp_err_t nvs_set_blob(nvs_handle_t, const char *, const void *, size_t);\n"
+                               "esp_err_t nvs_commit(nvs_handle_t);\n")
+    common.append("-I" + str(stubs))
     if args.case == "replay":
         build_run("replay", [tests.parent / "test_replay_capacity.c", gate])
         build_run("gate", [tests.parent / "test_gate.c", gate])
+        build_run("nv_replay", [tests / "test_nv_replay.c", main_dir / "nv_store.c", gate])
     if args.case == "protocol":
         build_run("fields", [tests / "test_proto_fields.c", gate, *proto])
     source = (main_dir / "feeder.c").read_text()

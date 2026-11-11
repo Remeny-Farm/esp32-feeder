@@ -292,16 +292,18 @@ static void handle_cmd(const char *buf, size_t len)
         ESP_LOGW(TAG, "cmd dropped: no usable id or not JSON (%u bytes)", (unsigned)len);
         return;
     }
+    gate_time_t tm;
+    fclock_get(&tm);
+    const gate_cmd_meta_t meta = {.id = cmd.id, .issued_at = cmd.issued_at, .expires_at = cmd.expires_at};
     if (pr == PROTO_PARSE_INVALID) {
-        /* Id known, rest bad: remember the id so a replay is a duplicate. */
-        gate_note_id(&s_gate, cmd.id);
+        /* Keep usable parsed expiry metadata even when another field is bad.
+         * Missing/malformed timestamps leave zeroes; the same payload remains
+         * invalid and cannot later become eligible. No runtime limits change. */
+        gate_check_command(&s_gate, &tm, &meta);
         send_ack(cmd.id, GATE_INVALID);
         return;
     }
 
-    gate_time_t tm;
-    fclock_get(&tm);
-    const gate_cmd_meta_t meta = {.id = cmd.id, .issued_at = cmd.issued_at, .expires_at = cmd.expires_at};
     gate_result_t r;
 
     switch (cmd.type) {
