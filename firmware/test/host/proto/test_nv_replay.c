@@ -262,6 +262,70 @@ static void test_signed_expiry_roundtrip_and_max_after_reload(void)
 #endif
 }
 
+#ifdef GATE_PER_ID_EXPIRY
+#define T INT64_C(1793872800)
+#define W INT64_C(4102444800)
+static void init_floor_gate(gate_t *g)
+{
+    gate_limits_t l = {.hopper_count=1, .max_dose_g={10}, .daily_budget_g={50}, .daily_total_g=50};
+    CHECK(gate_init(g,&l));
+}
+static gate_time_t floor_time(int64_t wall, uint64_t mono)
+{ return (gate_time_t){.now=wall,.monotonic_s=mono,.clock_valid=true,.local_minute=600,.local_day=4}; }
+static void test_invalid_lifetime_retirement_correction_and_nv_reboot(void)
+{
+    gate_t g,restored;init_floor_gate(&g);gate_set_paused(&g,true);
+    g.st.day=4;g.st.used_g[0]=g.st.used_total_g=7;g.st.retired_expiry_floor=T-1000;
+    gate_runtime_limits_t rt;gate_runtime_limits_clear(&rt);rt.daily_total_g=9;
+    CHECK_EQ(gate_set_runtime_limits(&g,&rt,NULL),GATE_OK);
+    gate_time_t tm=floor_time(W,10000);
+    gate_cmd_meta_t ttl={.id="invalid-ttl",.issued_at=T,.expires_at=T+1000000};
+    gate_cmd_meta_t order={.id="invalid-order",.issued_at=W+1,.expires_at=W};
+    CHECK_EQ(gate_check_command(&g,&tm,&ttl),GATE_EXPIRED);
+    CHECK_EQ(gate_check_command(&g,&tm,&order),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[0],0);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[1],0);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t before_quiet;CHECK(nv_load_gate(&before_quiet));
+    CHECK_EQ(before_quiet.seen_expires_at[0],0);CHECK_EQ(before_quiet.seen_expires_at[1],0);
+    init_floor_gate(&g);CHECK(gate_restore(&g,&before_quiet));
+    /* First restored attempt starts the quiet interval and cannot retire ids. */
+    CHECK_EQ(gate_check_command(&g,&tm,&ttl),GATE_EXPIRED);CHECK_EQ(g.st.seen_count,2);
+    tm=floor_time(W+601,10601);
+    gate_cmd_meta_t trigger=ttl;trigger.id="invalid-retirement-trigger";
+    CHECK_EQ(gate_check_command(&g,&tm,&trigger),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->retired_expiry_floor,T-1000);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t loaded;CHECK(nv_load_gate(&loaded));CHECK(!loaded.replay_untrusted);
+    init_floor_gate(&restored);CHECK(gate_restore(&restored,&loaded));
+    tm=floor_time(T+1,10602);
+    gate_cmd_meta_t fresh={.id="invalid-ttl",.issued_at=tm.now,.expires_at=tm.now+300};
+    CHECK_EQ(gate_check_command(&restored,&tm,&fresh),GATE_OK);
+    CHECK_EQ(gate_check_command(&restored,&tm,&fresh),GATE_DUPLICATE);
+    CHECK_EQ(gate_check_command(&restored,&tm,&ttl),GATE_EXPIRED);
+    CHECK_EQ(gate_check_command(&restored,&tm,&order),GATE_EXPIRED);
+    CHECK(gate_paused(&restored));CHECK_EQ(restored.st.used_total_g,7);
+    CHECK_EQ(gate_eff_daily_total(&restored),9);CHECK_EQ(restored.st.retired_expiry_floor,T-1000);
+}
+static void test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot(void)
+{
+    gate_t g,restored;init_floor_gate(&g);gate_time_t tm=floor_time(T,10000);
+    gate_cmd_meta_t future={.id="protected-valid-payload",.issued_at=W,.expires_at=W+300};
+    CHECK_EQ(gate_check_command(&g,&tm,&future),GATE_EXPIRED);
+    gate_cmd_meta_t invalid={.id=future.id,.issued_at=T,.expires_at=T+1000000};
+    CHECK_EQ(gate_check_command(&g,&tm,&invalid),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[0],W+300);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t loaded;CHECK(nv_load_gate(&loaded));init_floor_gate(&restored);CHECK(gate_restore(&restored,&loaded));
+    CHECK_EQ(restored.st.seen_expires_at[0],W+300);
+    tm=floor_time(W,10601);CHECK_EQ(gate_check_command(&restored,&tm,&future),GATE_DUPLICATE);
+    CHECK_EQ(restored.st.seen_expires_at[0],W+300);
+}
+#else
+static void test_invalid_lifetime_retirement_correction_and_nv_reboot(void) {}
+static void test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot(void) {}
+#endif
+
 int main(void)
 {
     RUN_TEST(test_legacy_load_preserves_state_and_ids);
@@ -270,6 +334,8 @@ int main(void)
     RUN_TEST(test_full_length_printable_legacy_ids_roundtrip);
     RUN_TEST(test_signed_expiry_roundtrip_and_max_after_reload);
     RUN_TEST(test_three_key_interruption_and_unknown_format);
+    RUN_TEST(test_invalid_lifetime_retirement_correction_and_nv_reboot);
+    RUN_TEST(test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot);
     RUN_TEST(test_export_rollback_snapshot);
     return mt_summary();
 }

@@ -410,7 +410,9 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
         seen = index >= 0 || legacy;
         const bool lifetime = meta->expires_at >= meta->issued_at &&
             (uint64_t)meta->expires_at - (uint64_t)meta->issued_at <= (uint64_t)FEEDER_CMD_MAX_TTL_S;
-        const int64_t expiry = lifetime ? meta->expires_at : (clock_ok(tm) ? tm->now : 0);
+        /* Intrinsically invalid payloads can never become executable. A
+         * sampled wall time must not become their persisted retirement floor. */
+        const int64_t expiry = lifetime ? meta->expires_at : 0;
         if (index >= 0 && lifetime && expiry > g->st.seen_expires_at[index]) {
             g->st.seen_expires_at[index] = expiry; /* retries never shorten a protected id */
             g->dirty = true;

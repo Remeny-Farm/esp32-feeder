@@ -35,12 +35,16 @@ int feeder_hopper_index(const char *s)
     for (int i = 0; s != NULL && i < 3; i++) if (strcmp(s, names[i]) == 0) return i;
     return -1;
 }
+static int64_t mock_wall = INT64_C(1793872800);
+#if GATE_STATE_VERSION >= 2
+static uint64_t mock_mono = 10000;
+#endif
 static void fclock_get(gate_time_t *t)
 {
-    *t = (gate_time_t){.now = INT64_C(1793872800), .clock_valid = true,
+    *t = (gate_time_t){.now = mock_wall, .clock_valid = true,
                        .local_minute = 600, .local_day = 4};
 #if GATE_STATE_VERSION >= 2
-    t->monotonic_s = 10000;
+    t->monotonic_s = mock_mono;
 #endif
 }
 static const char *now_str(char *buf, size_t len)
@@ -100,6 +104,10 @@ static void setup(void)
     gate_limits_t l = {.hopper_count = 3, .max_dose_g = {10,10,10},
                        .daily_budget_g = {50,50,50}, .daily_total_g = 100};
     CHECK(gate_init(&s_gate, &l));
+    mock_wall = INT64_C(1793872800);
+#if GATE_STATE_VERSION >= 2
+    mock_mono = 10000;
+#endif
     s_have_last_state = s_save_pending = false;
     fail_json = false; queue_ok = true;
     state_builds = state_queues = saved = sequences = cues = schedules = received = 0;
@@ -192,6 +200,30 @@ static void test_schema_invalid_expiry_does_not_pin_cache(void)
     CHECK(!gate_paused(&s_gate));
     CHECK(strstr(last_ack, "invalid") != NULL);
 }
+#ifdef GATE_PER_ID_EXPIRY
+static void test_schema_invalid_false_era_retirement_and_restore(void)
+{
+    setup();mock_wall=INT64_C(4102444800);mock_mono=10000;
+    s_gate.st.retired_expiry_floor=INT64_C(1793872800)-1000;
+    gate_runtime_limits_t rt;gate_runtime_limits_clear(&rt);rt.daily_total_g=5;
+    CHECK_EQ(gate_set_runtime_limits(&s_gate,&rt,NULL),GATE_OK);gate_set_paused(&s_gate,true);
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"set_schedule\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\",\"window\":{\"start\":\"07:00\",\"end\":\"19:00\"},\"scatters_per_day\":1,\"limits\":{\"daily_totl_g\":5}}");
+    CHECK_EQ(gate_eff_daily_total(&s_gate),5);CHECK_EQ(schedules,0);CHECK(strstr(last_ack,"invalid")!=NULL);
+    mock_wall+=601;mock_mono+=601;
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a60\",\"type\":\"pause\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\"}");
+    CHECK_EQ(gate_state(&s_gate)->retired_expiry_floor,INT64_C(1793872800)-1000);
+    gate_state_t persisted=saved_state;
+    gate_limits_t l={.hopper_count=3,.max_dose_g={10,10,10},.daily_budget_g={50,50,50},.daily_total_g=100};
+    CHECK(gate_init(&s_gate,&l));CHECK(gate_restore(&s_gate,&persisted));
+    mock_wall=INT64_C(1793872801);mock_mono++;
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a61\",\"type\":\"pause\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\"}");
+    CHECK(strstr(last_ack,"accepted")!=NULL);CHECK(gate_paused(&s_gate));
+    CHECK_EQ(gate_eff_daily_total(&s_gate),5);CHECK_EQ(schedules,0);CHECK_EQ(sequences,0);CHECK_EQ(cues,0);
+}
+#else
+static void test_schema_invalid_false_era_retirement_and_restore(void) {}
+#endif
+
 int main(int argc, char **argv)
 {
     (void)argc;
@@ -200,6 +232,7 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "protocol") == 0) {
         RUN_TEST(test_unknown_limit_does_not_reset_budget);
         RUN_TEST(test_schema_invalid_expiry_does_not_pin_cache);
+        RUN_TEST(test_schema_invalid_false_era_retirement_and_restore);
     }
     return mt_summary();
 }

@@ -296,9 +296,9 @@ static void handle_cmd(const char *buf, size_t len)
     fclock_get(&tm);
     const gate_cmd_meta_t meta = {.id = cmd.id, .issued_at = cmd.issued_at, .expires_at = cmd.expires_at};
     if (pr == PROTO_PARSE_INVALID) {
-        /* A schema-invalid payload can never become eligible. Record its id
-         * at receive time, or truthfully report busy if no slot can be installed. */
-        const gate_cmd_meta_t invalid = {.id = cmd.id, .issued_at = tm.now, .expires_at = tm.now};
+        /* Mark the lifetime intrinsically invalid: partial schema data and
+         * sampled wall time must never enter the retired-payload cutoff. */
+        const gate_cmd_meta_t invalid = {.id = cmd.id, .issued_at = 1, .expires_at = 0};
         const gate_result_t noted = gate_check_command(&s_gate, &tm, &invalid);
         send_ack(cmd.id, noted == GATE_BUSY ? GATE_BUSY : GATE_INVALID);
         return;
