@@ -90,6 +90,26 @@ static bool parse_time(const cJSON *obj, const char *key, int64_t *out)
     return s != NULL && rfc3339_parse(s, out);
 }
 
+/* Match additionalProperties: false before a parsed command can change state. */
+static bool fields_only(const cJSON *obj, const char *const *allowed)
+{
+    if (!cJSON_IsObject(obj)) {
+        return false;
+    }
+    const cJSON *it;
+    cJSON_ArrayForEach(it, obj)
+    {
+        const char *const *key = allowed;
+        while (*key != NULL && strcmp(it->string, *key) != 0) {
+            key++;
+        }
+        if (*key == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool parse_doses(const cJSON *arr, proto_cmd_t *out)
 {
     if (!cJSON_IsArray(arr)) {
@@ -103,7 +123,7 @@ static bool parse_doses(const cJSON *arr, proto_cmd_t *out)
     const cJSON *it;
     cJSON_ArrayForEach(it, arr)
     {
-        if (!cJSON_IsObject(it) || i >= GATE_MAX_HOPPERS) {
+        if (!fields_only(it, (const char *const[]){"hopper", "grams", NULL}) || i >= GATE_MAX_HOPPERS) {
             return false;
         }
         const char *name = json_str(cJSON_GetObjectItemCaseSensitive(it, "hopper"));
@@ -142,7 +162,8 @@ static bool parse_hopper_map(const cJSON *obj, uint32_t dst[GATE_MAX_HOPPERS])
 static bool parse_limits(const cJSON *lim, gate_runtime_limits_t *rt)
 {
     gate_runtime_limits_clear(rt);
-    if (!cJSON_IsObject(lim)) {
+    if (!fields_only(lim, (const char *const[]){"max_dose_g", "daily_budget_g", "daily_total_g",
+                                              "min_interval_s", "quiet_hours", NULL})) {
         return false;
     }
     const cJSON *it;
@@ -168,7 +189,7 @@ static bool parse_limits(const cJSON *lim, gate_runtime_limits_t *rt)
         rt->min_interval_s = (uint32_t)v;
     }
     if ((it = cJSON_GetObjectItemCaseSensitive(lim, "quiet_hours")) != NULL) {
-        if (!cJSON_IsObject(it) ||
+        if (!fields_only(it, (const char *const[]){"start", "end", NULL}) ||
             !hhmm_parse(json_str(cJSON_GetObjectItemCaseSensitive(it, "start")), &rt->quiet_start_min) ||
             !hhmm_parse(json_str(cJSON_GetObjectItemCaseSensitive(it, "end")), &rt->quiet_end_min)) {
             return false;
@@ -182,7 +203,7 @@ static bool parse_schedule(const cJSON *root, proto_cmd_t *out)
 {
     const cJSON *win = cJSON_GetObjectItemCaseSensitive(root, "window");
     int64_t n;
-    if (!cJSON_IsObject(win) ||
+    if (!fields_only(win, (const char *const[]){"start", "end", NULL}) ||
         !hhmm_parse(json_str(cJSON_GetObjectItemCaseSensitive(win, "start")), &out->window_start_min) ||
         !hhmm_parse(json_str(cJSON_GetObjectItemCaseSensitive(win, "end")), &out->window_end_min) ||
         out->window_start_min == out->window_end_min ||
@@ -199,6 +220,15 @@ static bool parse_body(const cJSON *root, proto_cmd_t *out)
     const char *type = json_str(cJSON_GetObjectItemCaseSensitive(root, "type"));
     if (type == NULL || !parse_time(root, "issued_at", &out->issued_at) ||
         !parse_time(root, "expires_at", &out->expires_at)) {
+        return false;
+    }
+    const char *const common[] = {"id", "type", "issued_at", "expires_at", NULL};
+    const char *const scatter[] = {"id", "type", "issued_at", "expires_at", "doses", "cue", NULL};
+    const char *const schedule[] = {"id", "type", "issued_at", "expires_at", "window",
+                                   "scatters_per_day", "limits", NULL};
+    const char *const *allowed = strcmp(type, "scatter") == 0 ? scatter :
+                                strcmp(type, "set_schedule") == 0 ? schedule : common;
+    if (!fields_only(root, allowed)) {
         return false;
     }
     if (strcmp(type, "scatter") == 0) {

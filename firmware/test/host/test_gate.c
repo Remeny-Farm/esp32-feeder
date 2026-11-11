@@ -49,6 +49,9 @@ static gate_time_t at(int64_t now)
 {
     gate_time_t t;
     t.now = now;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s = (uint64_t)now;
+#endif
     t.clock_valid = true;
     t.local_day = (now - EPOCH0) / 86400;
     t.local_minute = (uint16_t)(((now - EPOCH0) % 86400) / 60);
@@ -316,16 +319,17 @@ static void test_duplicate_ring_keeps_last_32_ids(void)
         m = meta(id, NOON(1));
         CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
     }
-    /* The ring evicts oldest first once it is full. */
+    /* Capacity never evicts live ids, including ids from rejected commands. */
     for (int i = 40; i < 40 + GATE_SEEN_IDS; i++) {
         gate_cmd_meta_t m;
         snprintf(id, sizeof id, "ring-%03d", i);
         m = meta(id, NOON(1));
-        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK);
+        CHECK_EQ(gate_check_command(&g, &t, &m), i < GATE_SEEN_IDS ? GATE_OK : (gate_result_t)(GATE_INVALID + 1));
     }
     {
         gate_cmd_meta_t m = meta("ring-000", NOON(1));
-        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK); /* forgotten: documented limit */
+        CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
+        CHECK(gate_paused(&g));
     }
 }
 

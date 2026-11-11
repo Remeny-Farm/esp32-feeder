@@ -37,7 +37,7 @@ static QueueHandle_t s_queue;
 static feeder_msg_t s_msg;          /* receive buffer: static, not on the task stack */
 static bool s_save_pending;         /* the last NVS save of the gate failed: retry */
 static bool s_ota_checked;
-static proto_state_t s_last_state;  /* last state we published (or tried to) */
+static proto_state_t s_last_state;  /* last state successfully queued */
 static bool s_have_last_state;
 
 /* ------------------------------------------------------------ helpers */
@@ -62,14 +62,15 @@ static const char *now_str(char *buf, size_t len)
     return fclock_now_rfc3339(buf, len) ? buf : NULL;
 }
 
-static void send_json(feeder_topic_t topic, char *json)
+static bool send_json(feeder_topic_t topic, char *json)
 {
     if (json == NULL) {
         ESP_LOGE(TAG, "out of memory building a message");
-        return;
+        return false;
     }
-    feeder_mqtt_publish(topic, json); /* a failed publish is logged inside */
+    const bool queued = feeder_mqtt_publish(topic, json); /* failure is logged inside */
     proto_free(json);
+    return queued;
 }
 
 static void send_ack(const char *id, gate_result_t r)
@@ -131,10 +132,12 @@ static void publish_state(bool force)
     if (!force && s_have_last_state && !state_differs(&v, &s_last_state)) {
         return;
     }
-    s_last_state = v;
-    s_have_last_state = true;
+    s_have_last_state = false; /* a failed forced reconnect publish must retry too */
     char at[RFC3339_UTC_BUF];
-    send_json(FEEDER_TOPIC_STATE, proto_build_state(&v, now_str(at, sizeof at)));
+    if (send_json(FEEDER_TOPIC_STATE, proto_build_state(&v, now_str(at, sizeof at)))) {
+        s_last_state = v;
+        s_have_last_state = true;
+    }
 }
 
 /* ------------------------------------------------------------ OTA rollback */
@@ -289,16 +292,18 @@ static void handle_cmd(const char *buf, size_t len)
         ESP_LOGW(TAG, "cmd dropped: no usable id or not JSON (%u bytes)", (unsigned)len);
         return;
     }
-    if (pr == PROTO_PARSE_INVALID) {
-        /* Id known, rest bad: remember the id so a replay is a duplicate. */
-        gate_note_id(&s_gate, cmd.id);
-        send_ack(cmd.id, GATE_INVALID);
-        return;
-    }
-
     gate_time_t tm;
     fclock_get(&tm);
     const gate_cmd_meta_t meta = {.id = cmd.id, .issued_at = cmd.issued_at, .expires_at = cmd.expires_at};
+    if (pr == PROTO_PARSE_INVALID) {
+        /* Mark the lifetime intrinsically invalid: partial schema data and
+         * sampled wall time must never enter the retired-payload cutoff. */
+        const gate_cmd_meta_t invalid = {.id = cmd.id, .issued_at = 1, .expires_at = 0};
+        const gate_result_t noted = gate_check_command(&s_gate, &tm, &invalid);
+        send_ack(cmd.id, noted == GATE_BUSY ? GATE_BUSY : GATE_INVALID);
+        return;
+    }
+
     gate_result_t r;
 
     switch (cmd.type) {
@@ -464,12 +469,15 @@ void feeder_init(void)
         /* Inconsistent compiled-in limits: the gate rejects everything (fault). */
         ESP_LOGE(TAG, "gate_init failed: limits inconsistent, all scatters will be rejected");
     } else {
-        static gate_state_t saved; /* 2.4 kB: static, not on the stack */
+        static gate_state_t saved; /* full persisted snapshot: static, not on the stack */
         if (nv_load_gate(&saved)) {
             if (gate_restore(&s_gate, &saved)) {
                 ESP_LOGI(TAG, "gate state restored");
             } else {
-                ESP_LOGW(TAG, "saved gate state failed validation: starting empty");
+                ESP_LOGE(TAG, "saved gate state failed validation: admission disabled");
+                gate_set_paused(&s_gate, true);
+                gate_fault_raise(&s_gate, GATE_FAULT_WATCHDOG);
+                s_gate.ready = false; /* never replace invalid persisted safety state with a running gate */
             }
         } else {
             ESP_LOGI(TAG, "no saved gate state: starting empty");

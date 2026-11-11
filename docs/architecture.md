@@ -50,8 +50,34 @@ Open decisions are listed at the end.
 - Every command carries a unique `id` and an `expires_at`. The device rejects
   expired commands and command ids it has already seen (replay protection).
 - The device rejects a command whose lifetime (`expires_at - issued_at`) is
-  longer than 300 s, as `expired`. This keeps every valid command inside the
-  replay window.
+  longer than 300 s, as `expired`. Each installed replay id keeps its own maximum
+  expiry. After 600 seconds of monotonic silence, expired slots may be reclaimed;
+  a single far-future id does not pin the other 63 slots. A persisted retired-payload
+  expiry cutoff rejects old discarded payloads after a backward clock correction.
+- A full 64-id active cache safely pauses and returns `busy` for a new id without
+  installing or executing it. That id is not consumed; a later delivery is evaluated
+  normally once space exists. Installed live ids are never overwritten, and recovery
+  never resumes automatically. All 64 protected future ids can exhaust the finite
+  capacity until some are reclaimable; no unbounded rejection history is promised.
+- SNTP remains the configured trusted time source. Its native pre-apply hook holds
+  an isolated large outlier before it changes the system clock. Two consistent
+  replies establish initial time, using 15 s confirmation polling, then normal polling.
+  An established good projection remains in use while a single outlier is held.
+  Every clock consumer, including state/accounting and random scheduling, sees only
+  established time. This filters isolated bad replies, including a bad first reply;
+  it does not authenticate two mutually consistent false responses from a malicious source.
+- Upgrading version 1 preserves pause, budgets, faults and every cached id. The
+  64 unknown-expiry legacy ids move to a separate permanent quarantine, so active
+  capacity remains usable. Full printable ASCII ids are encoded losslessly in base95.
+- NVS retains an exact 2472-byte v1 `gate` mirror for rollback, a 1928-byte immutable
+  `gate_legacy` block and a 384-byte mutable expiry/recovery extension. Signed40
+  expiry encoding preserves all RFC3339 dates, including negative epochs; wider
+  internal values use a conservative unknown marker. The default partition is unchanged.
+  The required write order is legacy, metadata, then mirror, followed by commit.
+  These keys are not an atomic transaction. Hash-bound snapshots detect missing or
+  interrupted writes, retain known counters/faults and disable admission instead of
+  starting empty. No motor begins before the complete save succeeds. Storage-integrity
+  disable is not cleared by the service-button fault-clear action.
 - The MQTT client id equals the device id, which equals the certificate CN.
   The broker forces the client id to the certificate CN, so a device cannot
   connect under another id (see `server/README.md`).
@@ -125,7 +151,7 @@ Example rejection:
 }
 ```
 
-Rejection reasons: `expired`, `duplicate`, `no_clock`, `paused`, `quiet_hours`,
+Rejection reasons: `expired`, `duplicate`, `no_clock`, `busy`, `paused`, `quiet_hours`,
 `min_interval`, `dose_limit`, `daily_budget_exceeded`, `hopper_empty`, `fault`,
 `invalid`. The JSON Schemas are in `protocol/`.
 

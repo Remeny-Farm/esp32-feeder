@@ -1,0 +1,341 @@
+/* Exercise the real NVS adapter with in-memory boundary stubs, no device. */
+#include "mini_test.h"
+#include "nv_store.h"
+#include "nvs.h"
+#include <stdlib.h>
+
+/* Exact deployed v1 layout, retained here as a migration fixture. */
+typedef struct {
+    uint32_t magic, version;
+    int64_t day;
+    uint32_t used_g[GATE_MAX_HOPPERS], used_total_g;
+    int64_t last_scatter_at, last_cue_at;
+    uint32_t fault_mask;
+    bool paused;
+    gate_runtime_limits_t runtime;
+    char seen_ids[GATE_SEEN_IDS][GATE_ID_BUF];
+    uint16_t seen_head, seen_count;
+} legacy_gate_state_t;
+static unsigned char blobs[3][sizeof(gate_state_t)];
+static size_t sizes[3];
+static int commits, fail_mirror, fail_metadata;
+static int slot(const char *key) { return strcmp(key, "gate_v2") == 0 ? 1 : strcmp(key, "gate_legacy") == 0 ? 2 : 0; }
+esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *h)
+{ (void)ns; (void)mode; *h = 1; return ESP_OK; }
+void nvs_close(nvs_handle_t h) { (void)h; }
+esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *dst, size_t *len)
+{
+    (void)h; int i = slot(key);
+    if (!sizes[i]) return ESP_ERR_NVS_NOT_FOUND;
+    if (*len < sizes[i]) return ESP_ERR_NVS_INVALID_LENGTH;
+    memcpy(dst, blobs[i], sizes[i]); *len = sizes[i]; return ESP_OK;
+}
+esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *src, size_t len)
+{
+    (void)h; int i = slot(key);
+    if ((i == 0 && fail_mirror) || (i == 1 && fail_metadata)) return ESP_ERR_NVS_INVALID_LENGTH;
+    memcpy(blobs[i], src, len); sizes[i] = len; return ESP_OK;
+}
+esp_err_t nvs_commit(nvs_handle_t h) { (void)h; commits++; return ESP_OK; }
+bool sched_cfg_valid(const sched_cfg_t *s) { (void)s; return true; }
+
+static void test_legacy_load_preserves_state_and_ids(void)
+{
+    legacy_gate_state_t old;
+    memset(&old, 0, sizeof old);
+    old.magic = GATE_STATE_MAGIC; old.version = 1; old.day = 3;
+    old.used_g[0] = old.used_total_g = 7;
+    old.paused = true;
+    gate_runtime_limits_clear(&old.runtime); old.runtime.daily_total_g = 9;
+    for (int i = 0; i < GATE_SEEN_IDS; i++) snprintf(old.seen_ids[i], GATE_ID_BUF, "legacy-%d", i);
+    strcpy(old.seen_ids[0], "legacy-future-resume"); old.seen_count = GATE_SEEN_IDS; old.seen_head = 0;
+    memcpy(blobs[0], &old, sizeof old); sizes[0] = sizeof old; sizes[1] = sizes[2] = 0;
+    gate_state_t loaded;
+    CHECK(nv_load_gate(&loaded));
+    CHECK_EQ(loaded.version, GATE_STATE_VERSION);
+    CHECK(loaded.paused); CHECK_EQ(loaded.used_g[0], 7);
+    CHECK_EQ(loaded.used_total_g, 7); CHECK_EQ(loaded.runtime.daily_total_g, 9);
+    CHECK_EQ(loaded.day, 3);
+#ifdef GATE_LEGACY_IDS
+    CHECK_EQ(loaded.seen_count, 0); CHECK_EQ(loaded.legacy_count, GATE_SEEN_IDS);
+    CHECK_STR(loaded.legacy_ids[0], "legacy-future-resume");
+#else
+    CHECK_EQ(loaded.seen_count, GATE_SEEN_IDS);
+    CHECK_STR(loaded.seen_ids[0], "legacy-future-resume");
+#endif
+#if GATE_STATE_VERSION >= 2
+    CHECK_EQ(sizeof old, GATE_STATE_V1_SIZE);
+
+#endif
+    gate_limits_t limits = {.hopper_count = 1, .max_dose_g = {10},
+                            .daily_budget_g = {50}, .daily_total_g = 100};
+    gate_t g; CHECK(gate_init(&g, &limits)); CHECK(gate_restore(&g, &loaded));
+    gate_time_t t = {.now = GATE_MIN_VALID_EPOCH + 10000, .clock_valid = true,
+                     .local_minute = 720, .local_day = 3};
+    gate_cmd_meta_t m = {.id = "legacy-future-resume", .issued_at = t.now, .expires_at = t.now + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
+    t.now += 100000;
+#if GATE_STATE_VERSION >= 2
+    t.monotonic_s = 100000;
+#endif
+    m.issued_at = t.now; m.expires_at = t.now + 300;
+    CHECK_EQ(gate_check_command(&g, &t, &m), GATE_DUPLICATE);
+    CHECK(gate_paused(&g));
+    m.id = "new-explicit-resume";
+    CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK);
+    gate_set_paused(&g, false);
+    CHECK(!gate_paused(&g));
+    /* A normal v2 save/reload retains quarantine and a working active cache. */
+    CHECK_EQ(nv_save_gate(gate_state(&g)), ESP_OK);
+    CHECK(nv_load_gate(&loaded));
+    gate_t again; CHECK(gate_init(&again, &limits)); CHECK(gate_restore(&again, &loaded));
+    m.id = "legacy-future-resume";
+    CHECK_EQ(gate_check_command(&again, &t, &m), GATE_DUPLICATE);
+    m.id = "new-after-reboot";
+    CHECK_EQ(gate_check_command(&again, &t, &m), GATE_OK);
+}
+
+static void test_v2_roundtrip_retains_expiry_and_wall_floor(void)
+{
+#if GATE_STATE_VERSION >= 2
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    state.paused = true;
+#ifdef GATE_PER_ID_EXPIRY
+    state.retired_expiry_floor = GATE_MIN_VALID_EPOCH + 1000;
+    strcpy(state.seen_ids[0], "negative-epoch"); strcpy(state.seen_ids[1], "future-epoch");
+    state.seen_count = state.seen_head = 2;
+    state.seen_expires_at[0] = -INT64_C(62167219200);
+    state.seen_expires_at[1] = GATE_MIN_VALID_EPOCH + 1300;
+#else
+    state.seen_expires_at = GATE_MIN_VALID_EPOCH + 1300;
+    state.clock_high_water = GATE_MIN_VALID_EPOCH + 1000;
+#endif
+    gate_runtime_limits_clear(&state.runtime);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+#ifdef GATE_LEGACY_IDS
+    CHECK_EQ(sizes[0], sizeof(legacy_gate_state_t));
+    CHECK(sizes[1] < sizeof state); /* extension metadata omits the active-cache prefix */
+#else
+    CHECK_EQ(sizes[0], sizeof(legacy_gate_state_t));
+#endif
+    CHECK(nv_load_gate(&loaded));
+    CHECK(memcmp(&state, &loaded, sizeof state) == 0);
+#endif
+}
+
+static void test_partial_save_disables_admission_and_preserves_budgets(void)
+{
+#ifdef GATE_LEGACY_IDS
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    state.paused = true; state.fault_mask = GATE_FAULT_STALL;
+    state.used_g[0] = state.used_total_g = 7;
+    gate_runtime_limits_clear(&state.runtime);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    state.paused = false; state.used_g[0] = state.used_total_g = 9;
+    fail_mirror = 1;
+    CHECK(nv_save_gate(&state) != ESP_OK);
+    fail_mirror = 0;
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted);
+    CHECK(loaded.paused); CHECK_EQ(loaded.used_g[0], 9);
+    CHECK(loaded.fault_mask & GATE_FAULT_STALL);
+    gate_limits_t limits = {.hopper_count = 1, .max_dose_g = {10},
+                            .daily_budget_g = {50}, .daily_total_g = 100};
+    gate_t g; CHECK(gate_init(&g, &limits)); CHECK(gate_restore(&g, &loaded));
+    gate_fault_clear_all(&g); /* existing service action cannot clear integrity failure */
+    gate_time_t t = {.now = GATE_MIN_VALID_EPOCH + 100, .clock_valid = true, .local_minute = 720};
+    gate_cmd_meta_t m = {.id = "resume", .issued_at = t.now, .expires_at = t.now + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &m), GATE_FAULT);
+    /* Also handle a newer v1 snapshot written after rolling back. */
+    legacy_gate_state_t newer;
+    memcpy(&newer, blobs[0], sizeof newer);
+    newer.used_g[0] = newer.used_total_g = 12;
+    newer.fault_mask |= GATE_FAULT_LID_OPEN;
+    memcpy(blobs[0], &newer, sizeof newer);
+    CHECK(nv_load_gate(&loaded));
+    CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_g[0], 12);
+    CHECK_EQ(loaded.used_total_g, 12);
+    CHECK(loaded.fault_mask & GATE_FAULT_LID_OPEN);
+#endif
+}
+
+static void test_three_key_interruption_and_unknown_format(void)
+{
+#ifdef GATE_PER_ID_EXPIRY
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    state.used_g[0] = state.used_total_g = 7;
+    state.paused = true; state.fault_mask = GATE_FAULT_STALL;
+    gate_runtime_limits_clear(&state.runtime);
+    state.runtime.daily_total_g = 9;
+    state.legacy_count = 1; strcpy(state.legacy_ids[0], "old-quarantine");
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* Simulate power loss after immutable legacy changed, before metadata. */
+    strcpy(state.legacy_ids[0], "replacement-quarantine");
+    fail_metadata = 1; CHECK(nv_save_gate(&state) != ESP_OK); fail_metadata = 0;
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); CHECK_EQ(loaded.runtime.daily_total_g, 9);
+    CHECK(loaded.fault_mask & GATE_FAULT_STALL);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* Missing or noncanonical third key must never silently erase quarantine. */
+    const size_t legacy_size = sizes[2]; sizes[2] = 0;
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); sizes[2] = legacy_size;
+    blobs[2][6] = 1; /* canonical legacy reserved field must be zero */
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    /* An unreleased/unknown metadata format preserves deployed v1 budgets. */
+    uint32_t unknown = UINT32_MAX; memcpy(blobs[1], &unknown, sizeof unknown);
+    CHECK(nv_load_gate(&loaded)); CHECK(loaded.replay_untrusted && loaded.paused);
+    CHECK_EQ(loaded.used_total_g, 7); CHECK_EQ(loaded.runtime.daily_total_g, 9);
+    CHECK(loaded.fault_mask & GATE_FAULT_STALL);
+#endif
+}
+
+static void test_export_rollback_snapshot(void)
+{
+    gate_state_t state;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    state.paused = true; state.fault_mask = GATE_FAULT_STALL;
+    state.used_g[0] = state.used_total_g = 7;
+    strcpy(state.seen_ids[0], "rollback-id"); state.seen_count = state.seen_head = 1;
+    gate_runtime_limits_clear(&state.runtime);
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    const char *path = getenv("FEEDER_TEST_ROLLBACK_BLOB");
+    if (path != NULL) {
+        FILE *f = fopen(path, "wb"); CHECK(f != NULL);
+        if (f != NULL) { CHECK_EQ(fwrite(blobs[0], 1, sizes[0], f), sizes[0]); fclose(f); }
+    }
+}
+
+static void test_full_length_printable_legacy_ids_roundtrip(void)
+{
+#ifdef GATE_LEGACY_IDS
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    gate_runtime_limits_clear(&state.runtime);
+    state.legacy_count = GATE_LEGACY_IDS;
+    for (uint16_t i = 0; i < GATE_LEGACY_IDS; i++) {
+        for (size_t j = 0; j < GATE_ID_MAX_LEN; j++) {
+            state.legacy_ids[i][j] = (char)(0x21 + (i * 36 + j) % 94);
+        }
+        state.legacy_ids[i][0] = (char)(0x21 + i); /* unique ids, full printable range */
+        state.legacy_ids[i][GATE_ID_MAX_LEN] = '\0';
+    }
+    strcpy(state.legacy_ids[0], "!"); /* shortest id and maximum-length ids */
+    CHECK_EQ(nv_save_gate(&state), ESP_OK);
+    CHECK(nv_load_gate(&loaded));
+    CHECK(!loaded.replay_untrusted);
+    for (uint16_t i = 0; i < GATE_LEGACY_IDS; i++) CHECK_STR(state.legacy_ids[i], loaded.legacy_ids[i]);
+#endif
+}
+
+static void test_signed_expiry_roundtrip_and_max_after_reload(void)
+{
+#ifdef GATE_PER_ID_EXPIRY
+    gate_state_t state, loaded;
+    memset(&state, 0, sizeof state);
+    state.magic = GATE_STATE_MAGIC; state.version = GATE_STATE_VERSION;
+    gate_runtime_limits_clear(&state.runtime);
+    const int64_t epochs[] = {-INT64_C(62167219200), -1, 0, INT64_C(253402300799), INT64_MAX, INT64_MIN};
+    state.seen_count = state.seen_head = sizeof epochs / sizeof epochs[0];
+    for (uint16_t i = 0; i < state.seen_count; i++) {
+        snprintf(state.seen_ids[i], GATE_ID_BUF, "epoch-%u", i);
+        state.seen_expires_at[i] = epochs[i];
+    }
+    CHECK_EQ(nv_save_gate(&state), ESP_OK); CHECK(nv_load_gate(&loaded));
+    CHECK(!loaded.replay_untrusted);
+    for (uint16_t i = 0; i < state.seen_count; i++) CHECK_EQ(loaded.seen_expires_at[i], epochs[i] == INT64_MIN ? INT64_MAX : epochs[i]);
+    gate_limits_t limits = {.hopper_count = 1, .max_dose_g = {10}, .daily_budget_g = {50}, .daily_total_g = 100};
+    gate_t g; CHECK(gate_init(&g, &limits)); CHECK(gate_restore(&g, &loaded));
+    gate_time_t t = {.now = GATE_MIN_VALID_EPOCH + 100, .clock_valid = true, .local_minute = 720};
+    gate_cmd_meta_t earlier = {.id = "epoch-4", .issued_at = t.now, .expires_at = t.now + 300};
+    CHECK_EQ(gate_check_command(&g, &t, &earlier), GATE_DUPLICATE);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[4], INT64_MAX);
+#endif
+}
+
+#ifdef GATE_PER_ID_EXPIRY
+#define T INT64_C(1793872800)
+#define W INT64_C(4102444800)
+static void init_floor_gate(gate_t *g)
+{
+    gate_limits_t l = {.hopper_count=1, .max_dose_g={10}, .daily_budget_g={50}, .daily_total_g=50};
+    CHECK(gate_init(g,&l));
+}
+static gate_time_t floor_time(int64_t wall, uint64_t mono)
+{ return (gate_time_t){.now=wall,.monotonic_s=mono,.clock_valid=true,.local_minute=600,.local_day=4}; }
+static void test_invalid_lifetime_retirement_correction_and_nv_reboot(void)
+{
+    gate_t g,restored;init_floor_gate(&g);gate_set_paused(&g,true);
+    g.st.day=4;g.st.used_g[0]=g.st.used_total_g=7;g.st.retired_expiry_floor=T-1000;
+    gate_runtime_limits_t rt;gate_runtime_limits_clear(&rt);rt.daily_total_g=9;
+    CHECK_EQ(gate_set_runtime_limits(&g,&rt,NULL),GATE_OK);
+    gate_time_t tm=floor_time(W,10000);
+    gate_cmd_meta_t ttl={.id="invalid-ttl",.issued_at=T,.expires_at=T+1000000};
+    gate_cmd_meta_t order={.id="invalid-order",.issued_at=W+1,.expires_at=W};
+    CHECK_EQ(gate_check_command(&g,&tm,&ttl),GATE_EXPIRED);
+    CHECK_EQ(gate_check_command(&g,&tm,&order),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[0],0);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[1],0);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t before_quiet;CHECK(nv_load_gate(&before_quiet));
+    CHECK_EQ(before_quiet.seen_expires_at[0],0);CHECK_EQ(before_quiet.seen_expires_at[1],0);
+    init_floor_gate(&g);CHECK(gate_restore(&g,&before_quiet));
+    /* First restored attempt starts the quiet interval and cannot retire ids. */
+    CHECK_EQ(gate_check_command(&g,&tm,&ttl),GATE_EXPIRED);CHECK_EQ(g.st.seen_count,2);
+    tm=floor_time(W+601,10601);
+    gate_cmd_meta_t trigger=ttl;trigger.id="invalid-retirement-trigger";
+    CHECK_EQ(gate_check_command(&g,&tm,&trigger),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->retired_expiry_floor,T-1000);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t loaded;CHECK(nv_load_gate(&loaded));CHECK(!loaded.replay_untrusted);
+    init_floor_gate(&restored);CHECK(gate_restore(&restored,&loaded));
+    tm=floor_time(T+1,10602);
+    gate_cmd_meta_t fresh={.id="invalid-ttl",.issued_at=tm.now,.expires_at=tm.now+300};
+    CHECK_EQ(gate_check_command(&restored,&tm,&fresh),GATE_OK);
+    CHECK_EQ(gate_check_command(&restored,&tm,&fresh),GATE_DUPLICATE);
+    CHECK_EQ(gate_check_command(&restored,&tm,&ttl),GATE_EXPIRED);
+    CHECK_EQ(gate_check_command(&restored,&tm,&order),GATE_EXPIRED);
+    CHECK(gate_paused(&restored));CHECK_EQ(restored.st.used_total_g,7);
+    CHECK_EQ(gate_eff_daily_total(&restored),9);CHECK_EQ(restored.st.retired_expiry_floor,T-1000);
+}
+static void test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot(void)
+{
+    gate_t g,restored;init_floor_gate(&g);gate_time_t tm=floor_time(T,10000);
+    gate_cmd_meta_t future={.id="protected-valid-payload",.issued_at=W,.expires_at=W+300};
+    CHECK_EQ(gate_check_command(&g,&tm,&future),GATE_EXPIRED);
+    gate_cmd_meta_t invalid={.id=future.id,.issued_at=T,.expires_at=T+1000000};
+    CHECK_EQ(gate_check_command(&g,&tm,&invalid),GATE_EXPIRED);
+    CHECK_EQ(gate_state(&g)->seen_expires_at[0],W+300);
+    CHECK_EQ(nv_save_gate(gate_state(&g)),ESP_OK);
+    gate_state_t loaded;CHECK(nv_load_gate(&loaded));init_floor_gate(&restored);CHECK(gate_restore(&restored,&loaded));
+    CHECK_EQ(restored.st.seen_expires_at[0],W+300);
+    tm=floor_time(W,10601);CHECK_EQ(gate_check_command(&restored,&tm,&future),GATE_DUPLICATE);
+    CHECK_EQ(restored.st.seen_expires_at[0],W+300);
+}
+#else
+static void test_invalid_lifetime_retirement_correction_and_nv_reboot(void) {}
+static void test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot(void) {}
+#endif
+
+int main(void)
+{
+    RUN_TEST(test_legacy_load_preserves_state_and_ids);
+    RUN_TEST(test_v2_roundtrip_retains_expiry_and_wall_floor);
+    RUN_TEST(test_partial_save_disables_admission_and_preserves_budgets);
+    RUN_TEST(test_full_length_printable_legacy_ids_roundtrip);
+    RUN_TEST(test_signed_expiry_roundtrip_and_max_after_reload);
+    RUN_TEST(test_three_key_interruption_and_unknown_format);
+    RUN_TEST(test_invalid_lifetime_retirement_correction_and_nv_reboot);
+    RUN_TEST(test_valid_payload_max_expiry_survives_invalid_retry_and_nv_reboot);
+    RUN_TEST(test_export_rollback_snapshot);
+    return mt_summary();
+}

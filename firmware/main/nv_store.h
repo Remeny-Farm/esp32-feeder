@@ -8,7 +8,9 @@
 #include "rand_sched.h"
 #include "safety_gate.h"
 
-/* Load the saved gate state. False when none exists or its size is wrong.
+/* Load v2 state or migrate the v1 prefix without losing pause, counters or ids.
+ * Legacy ids are quarantined separately. Inconsistent snapshot pairs disable
+ * admission; false means no saved state exists.
  * The caller still validates it with gate_restore(). */
 bool nv_load_gate(gate_state_t *out);
 esp_err_t nv_save_gate(const gate_state_t *st);

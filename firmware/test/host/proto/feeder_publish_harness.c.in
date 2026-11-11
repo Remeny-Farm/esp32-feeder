@@ -1,0 +1,238 @@
+/* Host boundary mocks; production functions below are extracted without edits. */
+#include "mini_test.h"
+#include "feeder.h"
+#include "proto.h"
+#include "feeder_util.h"
+#include "rand_sched.h"
+#include <setjmp.h>
+#include <stdlib.h>
+
+#define ESP_OK 0
+#define ESP_LOGE(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
+#define LOOP_MS 100
+#define pdTRUE 1
+#define pdMS_TO_TICKS(x) (x)
+typedef int esp_err_t;
+typedef int QueueHandle_t;
+typedef enum { FEEDER_TOPIC_ACK, FEEDER_TOPIC_EVENT, FEEDER_TOPIC_STATE } feeder_topic_t;
+static gate_t s_gate;
+static QueueHandle_t s_queue;
+static feeder_msg_t s_msg, incoming;
+static bool s_save_pending, s_have_last_state;
+static proto_state_t s_last_state;
+static int state_builds, state_queues, saved, sequences, cues, schedules, received;
+static bool fail_json, queue_ok = true;
+static gate_state_t saved_state;
+static char last_ack[512];
+static jmp_buf loop_done;
+static const char *names[] = {"grain", "pellet", "mealworm"};
+uint8_t feeder_hopper_count(void) { return 3; }
+const char *feeder_hopper_name(uint8_t i) { return i < 3 ? names[i] : ""; }
+int feeder_hopper_index(const char *s)
+{
+    for (int i = 0; s != NULL && i < 3; i++) if (strcmp(s, names[i]) == 0) return i;
+    return -1;
+}
+static int64_t mock_wall = INT64_C(1793872800);
+#if GATE_STATE_VERSION >= 2
+static uint64_t mock_mono = 10000;
+#endif
+static void fclock_get(gate_time_t *t)
+{
+    *t = (gate_time_t){.now = mock_wall, .clock_valid = true,
+                       .local_minute = 600, .local_day = 4};
+#if GATE_STATE_VERSION >= 2
+    t->monotonic_s = mock_mono;
+#endif
+}
+static const char *now_str(char *buf, size_t len)
+{
+    (void)buf; (void)len;
+    return "2026-11-05T10:00:00Z";
+}
+static int nv_save_gate(const gate_state_t *s) { saved++; saved_state = *s; return ESP_OK; }
+static const char *esp_err_to_name(int e) { (void)e; return "mock"; }
+static bool feeder_mqtt_publish(feeder_topic_t topic, const char *json)
+{
+    if (topic == FEEDER_TOPIC_STATE) state_queues++;
+    if (topic == FEEDER_TOPIC_ACK) snprintf(last_ack, sizeof last_ack, "%s", json);
+    return queue_ok;
+}
+static char *fake_build_state(const proto_state_t *v, const char *at)
+{
+    (void)v; (void)at;
+    state_builds++;
+    if (fail_json) return NULL;
+    char *s = malloc(3);
+    if (s != NULL) memcpy(s, "{}", 3);
+    return s;
+}
+#define proto_build_state fake_build_state
+static void build_state(proto_state_t *v, const gate_time_t *t)
+{
+    memset(v, 0, sizeof *v);
+    v->paused = gate_paused(&s_gate);
+    v->clock_valid = t->clock_valid;
+    v->hopper_count = 3;
+}
+static void run_sequence(gate_source_t s, const char *id, const gate_dose_t *d, size_t n, bool cue)
+{ (void)s; (void)id; (void)d; (void)n; (void)cue; sequences++; }
+static void cue_play(void) { cues++; }
+static void send_cue_event(gate_source_t s, const char *id) { (void)s; (void)id; }
+void rand_sched_set_cfg(const sched_cfg_t *s) { (void)s; schedules++; }
+static int nv_save_sched(const sched_cfg_t *s) { (void)s; return ESP_OK; }
+static void button_init(void) {}
+static void button_poll(void) {}
+static void mark_app_valid_once(void) {}
+static void handle_random_scatter(void) { sequences++; }
+bool rand_sched_poll(const gate_t *g, const gate_time_t *t) { (void)g; (void)t; return false; }
+static void on_lid(bool b) { (void)b; }
+static int xQueueReceive(QueueHandle_t q, feeder_msg_t *m, int timeout)
+{
+    (void)q; (void)timeout;
+    if (received++) longjmp(loop_done, 1);
+    *m = incoming;
+    return pdTRUE;
+}
+
+/* @PRODUCTION_FUNCTIONS@ */
+
+static void setup(void)
+{
+    gate_limits_t l = {.hopper_count = 3, .max_dose_g = {10,10,10},
+                       .daily_budget_g = {50,50,50}, .daily_total_g = 100};
+    CHECK(gate_init(&s_gate, &l));
+    mock_wall = INT64_C(1793872800);
+#if GATE_STATE_VERSION >= 2
+    mock_mono = 10000;
+#endif
+    s_have_last_state = s_save_pending = false;
+    fail_json = false; queue_ok = true;
+    state_builds = state_queues = saved = sequences = cues = schedules = received = 0;
+    memset(last_ack, 0, sizeof last_ack);
+}
+static void run_message(const char *json)
+{
+    incoming.kind = FEEDER_MSG_CMD;
+    incoming.len = (uint16_t)strlen(json);
+    memcpy(incoming.payload, json, incoming.len + 1);
+    received = 0;
+    if (setjmp(loop_done) == 0) feeder_task(NULL);
+}
+static void test_state_retries(void)
+{
+    setup();
+    fail_json = true;
+    publish_state(false);
+    CHECK(!s_have_last_state);
+    CHECK_EQ(state_queues, 0);
+    fail_json = false; queue_ok = false;
+    publish_state(false);
+    CHECK(!s_have_last_state);
+    CHECK_EQ(state_queues, 1);
+    queue_ok = true;
+    publish_state(false);
+    CHECK(s_have_last_state);
+    CHECK_EQ(state_builds, 3);
+    CHECK_EQ(state_queues, 2);
+    publish_state(false);
+    CHECK_EQ(state_builds, 3); /* unchanged successful state is suppressed */
+    queue_ok = false;
+    publish_state(true); /* same state on reconnect, failure must stay dirty */
+    CHECK(!s_have_last_state);
+    queue_ok = true;
+    publish_state(false);
+    CHECK(s_have_last_state);
+    CHECK_EQ(state_queues, 4);
+    gate_set_paused(&s_gate, true);
+    queue_ok = false;
+    publish_state(false);
+    CHECK(!s_have_last_state);
+    queue_ok = true;
+    publish_state(false);
+    CHECK(s_last_state.paused);
+}
+static void test_overload_rejection_is_persisted_and_published(void)
+{
+    setup();
+    gate_time_t t;
+    fclock_get(&t);
+    for (int i = 0; i < GATE_SEEN_IDS; i++) {
+        char id[32]; snprintf(id, sizeof id, "recorded-%d", i);
+        gate_cmd_meta_t m = {.id = id, .issued_at = t.now, .expires_at = t.now + 300};
+        CHECK_EQ(gate_check_command(&s_gate, &t, &m), GATE_OK);
+    }
+    gate_take_dirty(&s_gate);
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"resume\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\"}");
+    CHECK(gate_paused(&s_gate));
+    CHECK_EQ(saved, 1);
+    CHECK(saved_state.paused);
+    CHECK(s_have_last_state && s_last_state.paused);
+    CHECK_EQ(state_queues, 1);
+    CHECK_EQ(sequences, 0);
+    CHECK_EQ(cues, 0);
+    CHECK(strstr(last_ack, "busy") != NULL);
+}
+static void test_unknown_limit_does_not_reset_budget(void)
+{
+    setup();
+    gate_runtime_limits_t rt;
+    gate_runtime_limits_clear(&rt); rt.daily_total_g = 5;
+    CHECK_EQ(gate_set_runtime_limits(&s_gate, &rt, NULL), GATE_OK);
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"set_schedule\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\",\"window\":{\"start\":\"07:00\",\"end\":\"19:00\"},\"scatters_per_day\":1,\"limits\":{\"daily_totl_g\":5}}");
+    CHECK_EQ(gate_eff_daily_total(&s_gate), 5);
+    CHECK_EQ(schedules, 0);
+    CHECK(strstr(last_ack, "invalid") != NULL);
+}
+static void test_schema_invalid_expiry_does_not_pin_cache(void)
+{
+    setup();
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"pause\",\"issued_at\":\"2099-01-01T00:00:00Z\",\"expires_at\":\"2099-01-01T00:05:00Z\",\"extra\":1}");
+#if GATE_STATE_VERSION >= 2
+#ifdef GATE_PER_ID_EXPIRY
+    CHECK(gate_state(&s_gate)->seen_expires_at[0] <= INT64_C(1793872800));
+#else
+    CHECK(gate_state(&s_gate)->seen_expires_at <= INT64_C(1793872800));
+#endif
+#endif
+    CHECK(!gate_paused(&s_gate));
+    CHECK(strstr(last_ack, "invalid") != NULL);
+}
+#ifdef GATE_PER_ID_EXPIRY
+static void test_schema_invalid_false_era_retirement_and_restore(void)
+{
+    setup();mock_wall=INT64_C(4102444800);mock_mono=10000;
+    s_gate.st.retired_expiry_floor=INT64_C(1793872800)-1000;
+    gate_runtime_limits_t rt;gate_runtime_limits_clear(&rt);rt.daily_total_g=5;
+    CHECK_EQ(gate_set_runtime_limits(&s_gate,&rt,NULL),GATE_OK);gate_set_paused(&s_gate,true);
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a69\",\"type\":\"set_schedule\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\",\"window\":{\"start\":\"07:00\",\"end\":\"19:00\"},\"scatters_per_day\":1,\"limits\":{\"daily_totl_g\":5}}");
+    CHECK_EQ(gate_eff_daily_total(&s_gate),5);CHECK_EQ(schedules,0);CHECK(strstr(last_ack,"invalid")!=NULL);
+    mock_wall+=601;mock_mono+=601;
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a60\",\"type\":\"pause\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\"}");
+    CHECK_EQ(gate_state(&s_gate)->retired_expiry_floor,INT64_C(1793872800)-1000);
+    gate_state_t persisted=saved_state;
+    gate_limits_t l={.hopper_count=3,.max_dose_g={10,10,10},.daily_budget_g={50,50,50},.daily_total_g=100};
+    CHECK(gate_init(&s_gate,&l));CHECK(gate_restore(&s_gate,&persisted));
+    mock_wall=INT64_C(1793872801);mock_mono++;
+    run_message("{\"id\":\"5f0c9a52-7d1e-4b8e-9a43-1f2d3c4b5a61\",\"type\":\"pause\",\"issued_at\":\"2026-11-05T10:00:00Z\",\"expires_at\":\"2026-11-05T10:05:00Z\"}");
+    CHECK(strstr(last_ack,"accepted")!=NULL);CHECK(gate_paused(&s_gate));
+    CHECK_EQ(gate_eff_daily_total(&s_gate),5);CHECK_EQ(schedules,0);CHECK_EQ(sequences,0);CHECK_EQ(cues,0);
+}
+#else
+static void test_schema_invalid_false_era_retirement_and_restore(void) {}
+#endif
+
+int main(int argc, char **argv)
+{
+    (void)argc;
+    if (strcmp(argv[1], "publish") == 0) RUN_TEST(test_state_retries);
+    if (strcmp(argv[1], "replay") == 0) RUN_TEST(test_overload_rejection_is_persisted_and_published);
+    if (strcmp(argv[1], "protocol") == 0) {
+        RUN_TEST(test_unknown_limit_does_not_reset_budget);
+        RUN_TEST(test_schema_invalid_expiry_does_not_pin_cache);
+        RUN_TEST(test_schema_invalid_false_era_retirement_and_restore);
+    }
+    return mt_summary();
+}

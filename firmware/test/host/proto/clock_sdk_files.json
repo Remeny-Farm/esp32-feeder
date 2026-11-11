@@ -1,0 +1,8 @@
+{
+  "commit": "e0991facf5ecb362af6aac1fae972139eb38d2e4",
+  "files": {
+    "components/lwip/apps/sntp/sntp.c": "a55abb6060dbb49821365751ac25990ce17e8feec32746ded25bb27544b06768",
+    "components/lwip/include/apps/esp_sntp.h": "3161749ab740cd38221694e435a40a06ffb80cd86dbab8b21a6a4717ddd14765",
+    "components/lwip/Kconfig": "423157b2282d266ed6866111001de3a5eccf05864a63ebd1dc885b475d8ee1a5"
+  }
+}

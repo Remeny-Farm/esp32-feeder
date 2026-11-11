@@ -14,10 +14,10 @@ void fclock_init(void);
 /* Start SNTP (after an IP address exists). Safe to call more than once. */
 esp_err_t fclock_sntp_start(void);
 
-/* True once SNTP has synced since boot. Never goes false again. */
+/* True once consistent SNTP replies establish time. A held outlier is never applied. */
 bool fclock_valid(void);
 
-/* Current time for the safety gate. local_day is the day number in LOCAL time,
+/* Established SNTP time projected with monotonic elapsed time for the safety gate. local_day is the day number in LOCAL time,
  * built from the broken-down local date, so it is correct across DST changes. */
 void fclock_get(gate_time_t *tm);
 
