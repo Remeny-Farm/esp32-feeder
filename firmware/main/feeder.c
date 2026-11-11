@@ -37,7 +37,7 @@ static QueueHandle_t s_queue;
 static feeder_msg_t s_msg;          /* receive buffer: static, not on the task stack */
 static bool s_save_pending;         /* the last NVS save of the gate failed: retry */
 static bool s_ota_checked;
-static proto_state_t s_last_state;  /* last state we published (or tried to) */
+static proto_state_t s_last_state;  /* last state successfully queued */
 static bool s_have_last_state;
 
 /* ------------------------------------------------------------ helpers */
@@ -62,14 +62,15 @@ static const char *now_str(char *buf, size_t len)
     return fclock_now_rfc3339(buf, len) ? buf : NULL;
 }
 
-static void send_json(feeder_topic_t topic, char *json)
+static bool send_json(feeder_topic_t topic, char *json)
 {
     if (json == NULL) {
         ESP_LOGE(TAG, "out of memory building a message");
-        return;
+        return false;
     }
-    feeder_mqtt_publish(topic, json); /* a failed publish is logged inside */
+    const bool queued = feeder_mqtt_publish(topic, json); /* failure is logged inside */
     proto_free(json);
+    return queued;
 }
 
 static void send_ack(const char *id, gate_result_t r)
@@ -131,10 +132,12 @@ static void publish_state(bool force)
     if (!force && s_have_last_state && !state_differs(&v, &s_last_state)) {
         return;
     }
-    s_last_state = v;
-    s_have_last_state = true;
+    s_have_last_state = false; /* a failed forced reconnect publish must retry too */
     char at[RFC3339_UTC_BUF];
-    send_json(FEEDER_TOPIC_STATE, proto_build_state(&v, now_str(at, sizeof at)));
+    if (send_json(FEEDER_TOPIC_STATE, proto_build_state(&v, now_str(at, sizeof at)))) {
+        s_last_state = v;
+        s_have_last_state = true;
+    }
 }
 
 /* ------------------------------------------------------------ OTA rollback */
