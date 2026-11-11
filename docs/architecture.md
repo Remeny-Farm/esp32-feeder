@@ -65,11 +65,14 @@ Open decisions are listed at the end.
   therefore blocks commands after a rollback until wall time catches up. The
   monotonic quiet interval restarts conservatively after reboot.
 - Upgrading a version 1 gate blob preserves pause, budgets, faults and every
-  cached id. Version 1 did not record expiries, so those ids cannot safely expire
-  automatically. An upgrade with a nonempty legacy cache retains it indefinitely;
-  reaching 64 ids causes the same safety pause. Local maintenance must inspect
-  and reprovision legacy state before normal cache recycling can resume. The
-  firmware never clears legacy pause or budgets as an upgrade shortcut.
+  cached id. Up to 64 legacy ids with unknown expiries move into a separate,
+  permanent quarantine. The new active cache starts empty, so upgrades retain
+  remote control without forgetting those old ids. Both caches have fixed size.
+- NVS keeps a v1-compatible `gate` snapshot for bootloader rollback and a full
+  `gate_v2` snapshot. Save succeeds only after both writes and their commit.
+  Interrupted/mismatched snapshot pairs preserve known budgets and faults and
+  disable admission instead of starting empty. A service-button fault clear
+  cannot clear this storage-integrity failure; the snapshots require repair.
 - The MQTT client id equals the device id, which equals the certificate CN.
   The broker forces the client id to the certificate CN, so a device cannot
   connect under another id (see `server/README.md`).

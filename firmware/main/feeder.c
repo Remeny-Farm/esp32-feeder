@@ -296,10 +296,10 @@ static void handle_cmd(const char *buf, size_t len)
     fclock_get(&tm);
     const gate_cmd_meta_t meta = {.id = cmd.id, .issued_at = cmd.issued_at, .expires_at = cmd.expires_at};
     if (pr == PROTO_PARSE_INVALID) {
-        /* Keep usable parsed expiry metadata even when another field is bad.
-         * Missing/malformed timestamps leave zeroes; the same payload remains
-         * invalid and cannot later become eligible. No runtime limits change. */
-        gate_check_command(&s_gate, &tm, &meta);
+        /* A schema-invalid payload can never become eligible. Consume its id
+         * at receive time without trusting its expiry to pin the whole cache. */
+        const gate_cmd_meta_t invalid = {.id = cmd.id, .issued_at = tm.now, .expires_at = tm.now};
+        gate_check_command(&s_gate, &tm, &invalid);
         send_ack(cmd.id, GATE_INVALID);
         return;
     }
@@ -469,12 +469,15 @@ void feeder_init(void)
         /* Inconsistent compiled-in limits: the gate rejects everything (fault). */
         ESP_LOGE(TAG, "gate_init failed: limits inconsistent, all scatters will be rejected");
     } else {
-        static gate_state_t saved; /* 2.4 kB: static, not on the stack */
+        static gate_state_t saved; /* full persisted snapshot: static, not on the stack */
         if (nv_load_gate(&saved)) {
             if (gate_restore(&s_gate, &saved)) {
                 ESP_LOGI(TAG, "gate state restored");
             } else {
-                ESP_LOGW(TAG, "saved gate state failed validation: starting empty");
+                ESP_LOGE(TAG, "saved gate state failed validation: admission disabled");
+                gate_set_paused(&s_gate, true);
+                gate_fault_raise(&s_gate, GATE_FAULT_WATCHDOG);
+                s_gate.ready = false; /* never replace invalid persisted safety state with a running gate */
             }
         } else {
             ESP_LOGI(TAG, "no saved gate state: starting empty");

@@ -4,6 +4,7 @@
 No ESP SDK, broker, certificates, motor backend or device connection is used.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -31,6 +32,7 @@ def main():
     parser.add_argument("--cjson-dir", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[4])
+    parser.add_argument("--v1-source-root", type=Path)
     parser.add_argument("--case", choices=("replay", "protocol", "publish"), required=True)
     args = parser.parse_args()
     root = args.source_root.resolve()
@@ -49,13 +51,14 @@ def main():
     def build_run(name, sources, arguments=()):
         binary = args.build_dir / name
         subprocess.run(common + list(map(str, sources)) + ["-o", str(binary)], check=True)
-        result = subprocess.run([str(binary), *arguments], cwd=root)
+        env = dict(os.environ, FEEDER_TEST_ROLLBACK_BLOB=str(args.build_dir / "rollback-gate.bin"))
+        result = subprocess.run([str(binary), *arguments], cwd=root, env=env)
         if result.returncode:
             failures.append(name)
     # Minimal ESP/NVS declarations; compile the actual adapter, not a port.
     stubs = args.build_dir / "sdk-stubs"
     stubs.mkdir(exist_ok=True)
-    (stubs / "esp_err.h").write_text("#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_ERR_NVS_NOT_FOUND 1\n#define ESP_ERR_NVS_INVALID_LENGTH 2\n")
+    (stubs / "esp_err.h").write_text("#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_ERR_NVS_NOT_FOUND 1\n#define ESP_ERR_NVS_INVALID_LENGTH 2\n#define ESP_ERR_INVALID_ARG 3\n")
     (stubs / "esp_log.h").write_text("#pragma once\n#define ESP_LOGW(tag, ...) ((void)(tag))\n")
     (stubs / "nvs.h").write_text("#pragma once\n#include <stddef.h>\n#include \"esp_err.h\"\n"
                                "typedef int nvs_handle_t;\n#define NVS_READONLY 0\n#define NVS_READWRITE 1\n"
@@ -68,6 +71,20 @@ def main():
         build_run("replay", [tests.parent / "test_replay_capacity.c", gate])
         build_run("gate", [tests.parent / "test_gate.c", gate])
         build_run("nv_replay", [tests / "test_nv_replay.c", main_dir / "nv_store.c", gate])
+        if args.v1_source_root:
+            old = args.v1_source_root.resolve()
+            binary = args.build_dir / "v1_rollback_reader"
+            old_components = old / "firmware/components"
+            command = ["/usr/bin/cc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+                       "-Wno-unused-function", "-I" + str(tests.parent), "-I" + str(stubs),
+                       "-I" + str(old / "firmware/main"),
+                       "-I" + str(old_components / "safety_gate/include"),
+                       "-I" + str(old_components / "feeder_util/include"),
+                       str(tests / "test_v1_rollback_read.c"), str(old / "firmware/main/nv_store.c"),
+                       str(old_components / "safety_gate/safety_gate.c"), "-o", str(binary)]
+            subprocess.run(command, check=True)
+            r = subprocess.run([str(binary), str(args.build_dir / "rollback-gate.bin")], cwd=root)
+            if r.returncode: failures.append("v1_rollback_reader")
     if args.case == "protocol":
         build_run("fields", [tests / "test_proto_fields.c", gate, *proto])
     source = (main_dir / "feeder.c").read_text()

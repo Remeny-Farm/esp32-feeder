@@ -59,7 +59,17 @@ static bool clock_ok(const gate_time_t *tm)
            tm->local_minute < GATE_MINUTES_PER_DAY;
 }
 
-/* ---- seen-id ring ---- */
+/* ---- bounded active cache and permanent legacy quarantine ---- */
+
+static bool legacy_contains(const gate_t *g, const char *id)
+{
+    for (uint16_t i = 0; i < g->st.legacy_count; i++) {
+        if (strncmp(g->st.legacy_ids[i], id, GATE_ID_BUF) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static bool seen_contains(const gate_t *g, const char *id)
 {
@@ -68,7 +78,7 @@ static bool seen_contains(const gate_t *g, const char *id)
             return true;
         }
     }
-    return false;
+    return legacy_contains(g, id);
 }
 
 static bool seen_record(gate_t *g, const char *id)
@@ -287,39 +297,44 @@ gate_result_t gate_set_runtime_limits(gate_t *g, const gate_runtime_limits_t *rt
 
 bool gate_restore(gate_t *g, const gate_state_t *saved)
 {
-    gate_state_t st;
+    const gate_state_t *st = saved;
     gate_runtime_limits_t norm;
 
     if (!g->ready || saved == NULL) {
         return false;
     }
-    st = *saved;
-    if (st.magic != GATE_STATE_MAGIC || st.version != GATE_STATE_VERSION) {
+    if (st->magic != GATE_STATE_MAGIC || st->version != GATE_STATE_VERSION) {
         return false;
     }
-    if (st.day < 0 || st.last_scatter_at < 0 || st.last_cue_at < 0 ||
-        st.seen_head >= GATE_SEEN_IDS || st.seen_count > GATE_SEEN_IDS ||
-        st.seen_expires_at < 0 || st.clock_high_water < 0) {
+    if (st->day < 0 || st->last_scatter_at < 0 || st->last_cue_at < 0 ||
+        st->seen_head >= GATE_SEEN_IDS || st->seen_count > GATE_SEEN_IDS ||
+        st->seen_expires_at < 0 || st->clock_high_water < 0 || st->legacy_count > GATE_LEGACY_IDS) {
         return false;
     }
-    if ((st.fault_mask & ~(GATE_FAULT_STALL | GATE_FAULT_LID_OPEN | GATE_FAULT_MOTOR_CONTROLLER |
+    if ((st->fault_mask & ~(GATE_FAULT_STALL | GATE_FAULT_LID_OPEN | GATE_FAULT_MOTOR_CONTROLLER |
                            GATE_FAULT_WATCHDOG)) != 0) {
         return false;
     }
     for (uint8_t h = g->limits.hopper_count; h < GATE_MAX_HOPPERS; h++) {
-        if (st.used_g[h] != 0) {
+        if (st->used_g[h] != 0) {
             return false;
         }
     }
     /* Compiled limits may have changed with a new firmware: re-clamp. */
-    if (!runtime_normalise(g, &st.runtime, &norm, NULL)) {
+    if (!runtime_normalise(g, &st->runtime, &norm, NULL)) {
         return false;
     }
-    st.runtime = norm;
+    g->st = *st;
+    g->st.runtime = norm;
     for (uint16_t i = 0; i < GATE_SEEN_IDS; i++) {
-        st.seen_ids[i][GATE_ID_BUF - 1] = '\0';
+        g->st.seen_ids[i][GATE_ID_BUF - 1] = '\0';
     }
-    g->st = st;
+    for (uint16_t i = 0; i < GATE_LEGACY_IDS; i++) {
+        g->st.legacy_ids[i][GATE_ID_BUF - 1] = '\0';
+    }
+    if (g->st.replay_untrusted) {
+        g->ready = false;
+    }
     g->seen_timer_started = false; /* restart elapsed quiet interval after reboot */
     g->reserved = false; /* a reservation does not survive a restore: its grams stay counted */
     memset(g->reserved_g, 0, sizeof g->reserved_g);
@@ -382,7 +397,12 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     if (src == GATE_SRC_REMOTE) {
         seen_touch(g, tm);
     }
-    if (src == GATE_SRC_REMOTE && meta->expires_at > g->st.seen_expires_at) {
+    /* TTL/order-invalid payloads can never become admissible. Their untrusted
+     * far-future expiry must not poison retention of otherwise valid commands. */
+    if (src == GATE_SRC_REMOTE && !legacy_contains(g, meta->id) &&
+        meta->expires_at >= meta->issued_at &&
+        (uint64_t)meta->expires_at - (uint64_t)meta->issued_at <= (uint64_t)FEEDER_CMD_MAX_TTL_S &&
+        meta->expires_at > g->st.seen_expires_at) {
         g->st.seen_expires_at = meta->expires_at;
         g->dirty = true;
     }

@@ -82,6 +82,7 @@ extern "C" {
 #define GATE_MAX_HOPPERS 3
 /* Number of remembered command ids. The contract asks for >= 32. */
 #define GATE_SEEN_IDS 64
+#define GATE_LEGACY_IDS GATE_SEEN_IDS
 /* UUID text is 36 characters; the buffer includes the terminating NUL. */
 #define GATE_ID_MAX_LEN 36
 #define GATE_ID_BUF (GATE_ID_MAX_LEN + 1)
@@ -206,6 +207,9 @@ typedef struct {
     uint16_t seen_count;
     int64_t seen_expires_at;                     /* latest expiry, including rejected/overflow ids */
     int64_t clock_high_water;                    /* rollback cannot revive expired payloads */
+    char legacy_ids[GATE_LEGACY_IDS][GATE_ID_BUF]; /* unknown v1 expiry: never recycled */
+    uint16_t legacy_count;
+    bool replay_untrusted;                       /* mismatched persistent snapshots: disable admission */
 } gate_state_t;
 
 /* v1 is the unchanged prefix; legacy expiry metadata is unknowable. */

@@ -170,8 +170,26 @@ static void test_rollback_after_real_expiry_and_reboot_fails_closed(void)
     CHECK(gate_paused(&restored));
 }
 
+static void test_never_valid_expiry_does_not_poison_recovery(void)
+{
+    gate_t g;
+    setup(&g);
+    gate_time_t t = clock_at(NOW);
+    gate_cmd_meta_t bad_ttl = {.id = "bad-ttl", .issued_at = NOW, .expires_at = NOW + 1000000};
+    gate_cmd_meta_t bad_order = {.id = "bad-order", .issued_at = NOW + 1000001, .expires_at = NOW + 1000000};
+    CHECK_EQ(gate_check_command(&g, &t, &bad_ttl), GATE_EXPIRED);
+    CHECK_EQ(gate_check_command(&g, &t, &bad_order), GATE_EXPIRED);
+    fill(&g, &t);
+    CHECK_EQ(command(&g, &t, "overflow"), GATE_INVALID);
+    t = clock_at(NOW + RETAIN + 1);
+    CHECK_EQ(command(&g, &t, "fresh-after-invalid-metadata"), GATE_OK);
+    CHECK_EQ(g.st.seen_count, 1);
+    CHECK(gate_paused(&g));
+}
+
 int main(void)
 {
+    RUN_TEST(test_never_valid_expiry_does_not_poison_recovery);
     RUN_TEST(test_future_rejected_payload_stays_consumed_after_restore);
     RUN_TEST(test_forward_backward_wall_step_cannot_forget_resume);
     RUN_TEST(test_rollback_after_real_expiry_and_reboot_fails_closed);
