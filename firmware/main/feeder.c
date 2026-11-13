@@ -36,6 +36,7 @@ static gate_t s_gate;               /* owned by the feeder task after feeder_sta
 static QueueHandle_t s_queue;
 static feeder_msg_t s_msg;          /* receive buffer: static, not on the task stack */
 static bool s_save_pending;         /* the last NVS save of the gate failed: retry */
+static bool s_sched_save_pending;   /* the last NVS save of the schedule failed: retry */
 static bool s_ota_checked;
 static proto_state_t s_last_state;  /* last state successfully queued */
 static bool s_have_last_state;
@@ -54,6 +55,17 @@ static bool persist_gate(void)
         }
     }
     return true;
+}
+
+static void persist_sched(void)
+{
+    if (s_sched_save_pending) {
+        const esp_err_t err = nv_save_sched(rand_sched_cfg());
+        s_sched_save_pending = (err != ESP_OK);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "schedule save failed: %s (retry on next tick)", esp_err_to_name(err));
+        }
+    }
 }
 
 /* `at` buffer helper: returns buf when the clock is valid, else NULL (omit `at`). */
@@ -337,6 +349,7 @@ static void handle_cmd(const char *buf, size_t len)
     case CMD_SET_SCHEDULE:
         r = gate_check_command(&s_gate, &tm, &meta);
         if (r == GATE_OK) {
+            const gate_runtime_limits_t prev_rt = gate_state(&s_gate)->runtime;
             int clamped = 0;
             r = gate_set_runtime_limits(&s_gate, &cmd.limits, &clamped); /* GATE_INVALID: nothing changed */
             if (r == GATE_OK) {
@@ -346,13 +359,23 @@ static void handle_cmd(const char *buf, size_t len)
                 sc.window_start_min = cmd.window_start_min;
                 sc.window_end_min = cmd.window_end_min;
                 sc.scatters_per_day = cmd.scatters_per_day;
-                rand_sched_set_cfg(&sc); /* re-plans today */
                 const esp_err_t err = nv_save_sched(&sc);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "schedule save failed: %s", esp_err_to_name(err));
+                    (void)gate_set_runtime_limits(&s_gate, &prev_rt, NULL);
+                    r = GATE_FAULT;
+                } else if (!persist_gate()) {
+                    if (nv_save_sched(rand_sched_cfg()) != ESP_OK) {
+                        s_sched_save_pending = true;
+                    }
+                    (void)gate_set_runtime_limits(&s_gate, &prev_rt, NULL);
+                    r = GATE_FAULT;
+                } else {
+                    s_sched_save_pending = false;
+                    rand_sched_set_cfg(&sc); /* re-plans today */
+                    ESP_LOGI(TAG, "schedule set: %u scatters, %d limit(s) clamped",
+                             (unsigned)sc.scatters_per_day, clamped);
                 }
-                ESP_LOGI(TAG, "schedule set: %u scatters, %d limit(s) clamped", (unsigned)sc.scatters_per_day,
-                         clamped);
             }
         }
         send_ack(cmd.id, r);
@@ -449,6 +472,7 @@ static void feeder_task(void *arg)
         }
         button_poll();
         persist_gate();      /* after every handled message and every commit */
+        persist_sched();
         publish_state(false); /* only publishes when something changed */
     }
 }
