@@ -220,6 +220,20 @@ static void test_expired(void)
     CHECK_EQ(gate_check_command(&g, &t, &m), GATE_OK);
 }
 
+static void test_future_skew_at_epoch_limit(void)
+{
+    const int64_t times[] = {INT64_MAX - 301, INT64_MAX - 300, INT64_MAX - 299, INT64_MAX};
+    for (size_t i = 0; i < sizeof times / sizeof times[0]; i++) {
+        gate_t g;
+        setup(&g);
+        gate_time_t t = at(times[i]);
+        gate_cmd_meta_t m = {"epoch-limit", INT64_MAX, INT64_MAX};
+        gate_result_t result = gate_check_command(&g, &t, &m);
+        CHECK_EQ(result, i == 0 ? GATE_EXPIRED : GATE_OK);
+        REASON(result, i == 0 ? "expired" : NULL);
+    }
+}
+
 static void test_ttl_cap(void)
 {
     gate_t g;
@@ -1207,6 +1221,7 @@ int main(void)
     RUN_TEST(test_no_clock_random);
     RUN_TEST(test_id_recorded_when_rejected_for_no_clock);
     RUN_TEST(test_expired);
+    RUN_TEST(test_future_skew_at_epoch_limit);
     RUN_TEST(test_ttl_cap);
     RUN_TEST(test_duplicate_replay_of_accepted_id);
     RUN_TEST(test_duplicate_replay_of_rejected_id);
