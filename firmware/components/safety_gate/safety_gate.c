@@ -422,7 +422,8 @@ static gate_result_t precheck(gate_t *g, const gate_time_t *tm, gate_source_t sr
     }
     if (!clock_ok(tm)) return GATE_NO_CLOCK;
     if (src == GATE_SRC_RANDOM) return GATE_OK;
-    if (tm->now > meta->expires_at || meta->issued_at > tm->now + GATE_MAX_FUTURE_S ||
+    if (tm->now > meta->expires_at ||
+        (meta->issued_at > tm->now && meta->issued_at - tm->now > GATE_MAX_FUTURE_S) ||
         meta->expires_at < meta->issued_at ||
         (uint64_t)meta->expires_at - (uint64_t)meta->issued_at > (uint64_t)FEEDER_CMD_MAX_TTL_S ||
         meta->expires_at <= g->st.retired_expiry_floor) {
